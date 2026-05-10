@@ -1,0 +1,337 @@
+﻿<Window x:Class="EverythingDiskUsage.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:models="clr-namespace:EverythingDiskUsage.Models"
+        mc:Ignorable="d"
+        Icon="Assets/AppIcon.ico"
+        Title="Everything Disk Usage"
+        Height="760"
+        Width="1180"
+        MinHeight="620"
+        MinWidth="920"
+        Loaded="Window_Loaded"
+        Background="#F4F6F9">
+    <Window.Resources>
+        <SolidColorBrush x:Key="PanelBackground" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="BorderColor" Color="#D8DEE8" />
+        <SolidColorBrush x:Key="MutedText" Color="#5F6B7A" />
+        <SolidColorBrush x:Key="PrimaryText" Color="#18212F" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#157A8C" />
+
+        <Style x:Key="ToolbarButton" TargetType="{x:Type Button}">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinWidth" Value="78" />
+            <Setter Property="Margin" Value="8,0,0,0" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Background" Value="#FFFFFF" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource PrimaryText}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="PrimaryButton" TargetType="{x:Type Button}" BasedOn="{StaticResource ToolbarButton}">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+
+        <Style TargetType="{x:Type TextBox}">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style TargetType="{x:Type ComboBox}">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <HierarchicalDataTemplate DataType="{x:Type models:DirectoryUsageNode}" ItemsSource="{Binding Children}">
+            <Grid MinWidth="620" Margin="0,2,8,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="280" />
+                    <ColumnDefinition Width="105" />
+                    <ColumnDefinition Width="70" />
+                    <ColumnDefinition Width="85" />
+                    <ColumnDefinition Width="80" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding DisplayName}" Foreground="{StaticResource PrimaryText}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1" Text="{Binding SizeText}" HorizontalAlignment="Right" Foreground="{StaticResource PrimaryText}" />
+                <TextBlock Grid.Column="2" Text="{Binding PercentText}" HorizontalAlignment="Right" Foreground="{StaticResource MutedText}" />
+                <TextBlock Grid.Column="3" Text="{Binding FileCountText}" HorizontalAlignment="Right" Foreground="{StaticResource MutedText}" />
+                <TextBlock Grid.Column="4" Text="{Binding FolderCountText}" HorizontalAlignment="Right" Foreground="{StaticResource MutedText}" />
+            </Grid>
+        </HierarchicalDataTemplate>
+
+        <DataTemplate x:Key="LegendSliceTemplate" DataType="{x:Type models:PieSlice}">
+            <Grid Margin="0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="18" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Border Width="12" Height="12" Background="{Binding Fill}" CornerRadius="2" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding Label}" Margin="8,0,12,0" TextTrimming="CharacterEllipsis" Foreground="{StaticResource PrimaryText}" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <TextBlock Text="{Binding SizeText}" Foreground="{StaticResource PrimaryText}" MinWidth="70" TextAlignment="Right" />
+                    <TextBlock Text="{Binding PercentText}" Foreground="{StaticResource MutedText}" MinWidth="58" TextAlignment="Right" Margin="8,0,0,0" />
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#FFFFFF" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,14">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left">
+                        <TextBlock Text="Everything Disk Usage" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                        <TextBlock Text="Everything SDK" Foreground="{StaticResource MutedText}" Margin="0,2,0,0" />
+                    </StackPanel>
+                    <TextBlock x:Name="SdkStatusTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" VerticalAlignment="Center" />
+                </DockPanel>
+
+                <Grid Grid.Row="1" Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="92" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ComboBox x:Name="DriveComboBox" SelectionChanged="DriveComboBox_SelectionChanged" />
+                    <TextBox x:Name="RootPathTextBox" Grid.Column="1" Margin="8,0,0,0" KeyDown="RootPathTextBox_KeyDown" />
+                    <Button x:Name="BrowseButton" Grid.Column="2" Style="{StaticResource ToolbarButton}" Content="Browse" Click="BrowseButton_Click" />
+                    <Button x:Name="ScanButton" Grid.Column="3" Style="{StaticResource PrimaryButton}" Content="Scan" Click="ScanButton_Click" />
+                    <Button x:Name="CancelButton" Grid.Column="4" Style="{StaticResource ToolbarButton}" Content="Cancel" Click="CancelButton_Click" IsEnabled="False" />
+                </Grid>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Background="#EEF2F6" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusTextBlock" Foreground="{StaticResource PrimaryText}" Text="Ready" />
+                <TextBlock x:Name="SummaryTextBlock" Grid.Column="1" Foreground="{StaticResource MutedText}" />
+                <ProgressBar x:Name="ScanProgressBar" Grid.Row="1" Grid.ColumnSpan="2" Height="6" Margin="0,8,0,0" Minimum="0" Maximum="100" Value="0" />
+            </Grid>
+        </Border>
+
+        <TabControl Grid.Row="2" Margin="16,14,16,12" Background="Transparent" BorderThickness="0">
+            <TabItem Header="Chart">
+        <Grid Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*" MinWidth="520" />
+                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="2*" MinWidth="340" />
+            </Grid.ColumnDefinitions>
+
+            <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="22,0,20,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="280" />
+                            <ColumnDefinition Width="105" />
+                            <ColumnDefinition Width="70" />
+                            <ColumnDefinition Width="85" />
+                            <ColumnDefinition Width="80" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Name" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" />
+                        <TextBlock Grid.Column="1" Text="Size" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="2" Text="%" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="3" Text="Files" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="4" Text="Folders" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
+                    </Grid>
+                    <TreeView x:Name="UsageTree"
+                              Grid.Row="1"
+                              BorderThickness="0"
+                              Background="Transparent"
+                              SelectedItemChanged="UsageTree_SelectedItemChanged"
+                              VirtualizingStackPanel.IsVirtualizing="True"
+                              VirtualizingStackPanel.VirtualizationMode="Recycling" />
+                </Grid>
+            </Border>
+
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" />
+
+            <Border Grid.Column="2" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock x:Name="SelectedNameTextBlock" Text="No scan loaded" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="SelectedPathTextBlock" Foreground="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,3,0,12" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Size" Foreground="{StaticResource MutedText}" />
+                                <TextBlock x:Name="SelectedSizeTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                <TextBlock Text="Files" Foreground="{StaticResource MutedText}" />
+                                <TextBlock x:Name="SelectedFilesTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Margin="12,0,0,0">
+                                <TextBlock Text="Folders" Foreground="{StaticResource MutedText}" />
+                                <TextBlock x:Name="SelectedFoldersTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" MinHeight="340" Margin="0,14,0,10">
+                        <Canvas x:Name="PieCanvas" SizeChanged="PieCanvas_SizeChanged" />
+                        <TextBlock x:Name="EmptyPieTextBlock" Text="No size data" Foreground="{StaticResource MutedText}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <ListBox x:Name="LegendItems"
+                             Grid.Row="2"
+                             ItemTemplate="{StaticResource LegendSliceTemplate}"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             MaxHeight="220"
+                             SelectionChanged="LegendItems_SelectionChanged" />
+                </Grid>
+            </Border>
+        </Grid>
+            </TabItem>
+
+            <TabItem Header="Details">
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*" MinWidth="460" />
+                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="4*" MinWidth="520" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <DockPanel Margin="2,0,2,8">
+                                <TextBlock Text="Folders" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                                <TextBlock x:Name="FolderDetailsSummaryTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" />
+                            </DockPanel>
+                            <DataGrid x:Name="DirectoryDetailsGrid"
+                                      Grid.Row="1"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      GridLinesVisibility="Horizontal"
+                                      HeadersVisibility="Column"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      SelectedItem="{Binding ElementName=UsageTree, Path=SelectedItem, Mode=OneWay}"
+                                      SelectionChanged="DirectoryDetailsGrid_SelectionChanged">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="2*" />
+                                    <DataGridTextColumn Header="Path" Binding="{Binding FullPath}" Width="3*" />
+                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="95" />
+                                    <DataGridTextColumn Header="Allocated" Binding="{Binding AllocatedText}" Width="95" />
+                                    <DataGridTextColumn Header="Files" Binding="{Binding FileCountText}" Width="80" />
+                                    <DataGridTextColumn Header="Folders" Binding="{Binding FolderCountText}" Width="80" />
+                                    <DataGridTextColumn Header="% of Parent" Binding="{Binding PercentText}" Width="90" />
+                                    <DataGridTextColumn Header="Last Modified" Binding="{Binding LastModifiedText}" Width="130" />
+                                    <DataGridTextColumn Header="Last Accessed" Binding="{Binding LastAccessedText}" Width="130" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+
+                    <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" />
+
+                    <Border Grid.Column="2" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <DockPanel Margin="2,0,2,8">
+                                <TextBlock Text="Files" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                                <TextBlock x:Name="FileDetailsSummaryTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" />
+                            </DockPanel>
+                            <DataGrid x:Name="FileDetailsGrid"
+                                      Grid.Row="1"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      GridLinesVisibility="Horizontal"
+                                      HeadersVisibility="Column"
+                                      SelectionMode="Extended"
+                                      SelectionUnit="FullRow"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True">
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                                <Setter Property="Background" Value="#E9EFF5" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="2*" />
+                                    <DataGridTextColumn Header="Path" Binding="{Binding PathText}" Width="3*" />
+                                    <DataGridTextColumn Header="Files" Binding="{Binding FileCountText}" Width="70" />
+                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="100" />
+                                    <DataGridTextColumn Header="Last Modified" Binding="{Binding LastModifiedText}" Width="130" />
+                                    <DataGridTextColumn Header="Last Accessed" Binding="{Binding LastAccessedText}" Width="130" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <Border Grid.Row="3" Background="#FFFFFF" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,1,0,0" Padding="16,9">
+            <DockPanel>
+                <TextBlock x:Name="DriveSummaryTextBlock" Foreground="{StaticResource MutedText}" />
+                <TextBlock DockPanel.Dock="Right" Text="Powered by voidtools Everything SDK" Foreground="{StaticResource MutedText}" />
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>
