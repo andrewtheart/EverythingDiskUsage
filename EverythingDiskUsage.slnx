@@ -1,3 +1,5 @@
 <Solution>
+  <Folder Name="/Tests/" />
   <Project Path="EverythingDiskUsage.csproj" />
+  <Project Path="Tests/EverythingDiskUsage.Tests/EverythingDiskUsage.Tests.csproj" />
 </Solution>

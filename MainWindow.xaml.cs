@@ -15,7 +15,6 @@ using Forms = System.Windows.Forms;
 using IoPath = System.IO.Path;
 using MediaBrushes = System.Windows.Media.Brushes;
 using MediaBrush = System.Windows.Media.Brush;
-using MediaColor = System.Windows.Media.Color;
 using PathShape = System.Windows.Shapes.Path;
 using WpfKeyEventArgs = System.Windows.Input.KeyEventArgs;
 using WpfPoint = System.Windows.Point;
@@ -27,22 +26,6 @@ namespace EverythingDiskUsage;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private const int MaxVisibleFileRows = 1000;
-
-    private static readonly MediaColor[] SliceColors =
-    [
-        MediaColor.FromRgb(21, 122, 140),
-        MediaColor.FromRgb(235, 159, 54),
-        MediaColor.FromRgb(83, 139, 82),
-        MediaColor.FromRgb(190, 80, 72),
-        MediaColor.FromRgb(82, 116, 174),
-        MediaColor.FromRgb(137, 104, 168),
-        MediaColor.FromRgb(78, 163, 151),
-        MediaColor.FromRgb(205, 119, 71),
-        MediaColor.FromRgb(99, 121, 133),
-        MediaColor.FromRgb(48, 64, 84)
-    ];
-
     private readonly IDiskUsageAnalyzer _analyzer;
     private readonly IAppLogger _logger;
     private readonly IAppSettingsService _settingsService;
@@ -71,25 +54,7 @@ public partial class MainWindow : Window
     private DateTime _lastUiProgressLogUtc = DateTime.MinValue;
     private long _lastUiProgressLoggedFiles;
 
-    private sealed record DuplicateRowsSnapshot(
-        IReadOnlyList<DuplicateFileRow> Rows,
-        int SourceFileCount,
-        int TotalGroups,
-        long TotalWastedBytes,
-        int MaxGroups);
-
-    private sealed record ScanViewSnapshot(
-        DirectoryUsageNode Root,
-        IReadOnlyList<FileUsageItem> Files,
-        DuplicateRowsSnapshot Duplicates);
-
     private sealed record LogLevelOption(string DisplayName, AppLogLevel Level);
-
-    private enum ShellItemKind
-    {
-        File,
-        Directory
-    }
 
     public MainWindow()
         : this(new DiskUsageAnalyzer(), new AppLoggerAdapter(), new AppSettingsServiceAdapter(), new ShellContextMenuService())
@@ -101,6 +66,16 @@ public partial class MainWindow : Window
         IAppLogger logger,
         IAppSettingsService settingsService,
         IShellContextMenuService shellContextMenuService)
+        : this(analyzer, logger, settingsService, shellContextMenuService, configureNotifications: true)
+    {
+    }
+
+    public MainWindow(
+        IDiskUsageAnalyzer analyzer,
+        IAppLogger logger,
+        IAppSettingsService settingsService,
+        IShellContextMenuService shellContextMenuService,
+        bool configureNotifications)
     {
         _analyzer = analyzer;
         _logger = logger;
@@ -114,7 +89,11 @@ public partial class MainWindow : Window
         FileDetailsGrid.ItemsSource = _fileDetails;
         DuplicatesGrid.ItemsSource = _duplicateRows;
         ConfigureSettingsUi();
-        ConfigureNotifications();
+        if (configureNotifications)
+        {
+            ConfigureNotifications();
+        }
+
         _logger.Info("MainWindow constructor completed; item sources assigned");
     }
 
@@ -889,14 +868,9 @@ public partial class MainWindow : Window
     private ScanViewSnapshot BuildScanViewSnapshot(string rootPath, IReadOnlyList<FileUsageItem> files)
     {
         using var operation = _logger.TimedOperation($"BuildScanViewSnapshot; rootPath='{rootPath}'; fileCount={files.Count}");
-        var normalizedRoot = NormalizeDirectoryScope(rootPath);
-        var existingFiles = SortFiles(files
-            .Where(file => IsInsideRoot(file.FullPath, normalizedRoot) && System.IO.File.Exists(file.FullPath)))
-            .ToList();
-        var root = BuildRootFromFiles(normalizedRoot, existingFiles);
-        var duplicates = BuildDuplicateSnapshot(existingFiles);
-        _logger.Info($"Scan view snapshot built; root='{root.FullPath}', files={existingFiles.Count}, bytes={root.SizeBytes}, duplicateGroups={duplicates.TotalGroups}");
-        return new ScanViewSnapshot(root, existingFiles, duplicates);
+        var snapshot = ScanViewBuilder.BuildScanViewSnapshot(rootPath, files);
+        _logger.Info($"Scan view snapshot built; root='{snapshot.Root.FullPath}', files={snapshot.Files.Count}, bytes={snapshot.Root.SizeBytes}, duplicateGroups={snapshot.Duplicates.TotalGroups}");
+        return snapshot;
     }
 
     private void PopulateDetails(DirectoryUsageNode root, bool selectRoot = true)
@@ -924,60 +898,7 @@ public partial class MainWindow : Window
 
     private static DuplicateRowsSnapshot BuildDuplicateSnapshot(IReadOnlyList<FileUsageItem> files)
     {
-        const int MaxGroups = 500;
-        var rows = new List<DuplicateFileRow>();
-        if (files.Count == 0)
-        {
-            return new DuplicateRowsSnapshot(rows, files.Count, TotalGroups: 0, TotalWastedBytes: 0L, MaxGroups);
-        }
-
-        var allGroups = files
-            .Where(f => f.SizeBytes > 0)
-            .GroupBy(f => (Name: f.Name.ToLowerInvariant(), f.SizeBytes))
-            .Where(g => g.Count() >= 2)
-            .Select(g =>
-            {
-                var groupFiles = g.OrderBy(f => f.FullPath, StringComparer.OrdinalIgnoreCase).ToList();
-                return new
-                {
-                    Name = groupFiles[0].Name,
-                    g.Key.SizeBytes,
-                    Files = groupFiles,
-                    WastedBytes = (long)(groupFiles.Count - 1) * g.Key.SizeBytes
-                };
-            })
-            .OrderByDescending(g => g.WastedBytes)
-            .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var totalGroups = allGroups.Count;
-        var totalWasted = allGroups.Sum(g => g.WastedBytes);
-
-        foreach (var group in allGroups.Take(MaxGroups))
-        {
-            rows.Add(new DuplicateFileRow(
-                group.Name,
-                $"{group.Files.Count} copies",
-                ShellItemPath: null,
-                group.Files.Count,
-                group.SizeBytes,
-                group.WastedBytes,
-                IsGroup: true));
-
-            foreach (var file in group.Files)
-            {
-                rows.Add(new DuplicateFileRow(
-                    file.Name,
-                    file.DirectoryPath,
-                    file.FullPath,
-                    CopyCount: 1,
-                    file.SizeBytes,
-                    WastedBytes: 0L,
-                    IsGroup: false));
-            }
-        }
-
-        return new DuplicateRowsSnapshot(rows, files.Count, totalGroups, totalWasted, MaxGroups);
+        return ScanViewBuilder.BuildDuplicateSnapshot(files);
     }
 
     private void ApplyDuplicateSnapshot(DuplicateRowsSnapshot snapshot)
@@ -994,11 +915,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        DuplicatesSummaryTextBlock.Text = snapshot.TotalGroups == 0
-            ? "No duplicates found"
-            : snapshot.TotalGroups > snapshot.MaxGroups
-                ? $"Top {snapshot.MaxGroups:N0} of {snapshot.TotalGroups:N0} groups · {DirectoryUsageNode.FormatBytes(snapshot.TotalWastedBytes)} wasted"
-                : $"{snapshot.TotalGroups:N0} group{(snapshot.TotalGroups == 1 ? string.Empty : "s")} · {DirectoryUsageNode.FormatBytes(snapshot.TotalWastedBytes)} wasted";
+        DuplicatesSummaryTextBlock.Text = ScanViewBuilder.GetDuplicateSummaryText(snapshot);
 
         _logger.Info($"Duplicates populated; totalGroups={snapshot.TotalGroups}, shownGroups={Math.Min(snapshot.TotalGroups, snapshot.MaxGroups)}, totalWastedBytes={snapshot.TotalWastedBytes}");
     }
@@ -1021,78 +938,14 @@ public partial class MainWindow : Window
         using var operation = _logger.TimedOperation($"UpdateVisibleFiles; scope='{node.FullPath}'; nodeFiles={node.FileCount}", AppLogLevel.Debug);
         _fileDetails.Clear();
 
-        if (_allFilesSorted.Count == 0)
+        var snapshot = ScanViewBuilder.BuildVisibleFileDetails(node, _allFilesSorted);
+        foreach (var row in snapshot.Rows)
         {
-            FileDetailsSummaryTextBlock.Text = string.Empty;
-            _logger.Debug("UpdateVisibleFiles skipped because all-files cache is empty");
-            return;
+            _fileDetails.Add(row);
         }
 
-        var scopePath = NormalizeDirectoryScope(node.FullPath);
-        var scopedFiles = _allFilesSorted
-            .Where(file => file.FullPath.StartsWith(scopePath, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        _logger.Debug($"Scoped files resolved; scopePath='{scopePath}', scopedFileCount={scopedFiles.Count}");
-
-        var fileGroups = scopedFiles
-            .GroupBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
-            {
-                var groupFiles = group
-                    .OrderByDescending(file => file.SizeBytes)
-                    .ThenBy(file => file.DirectoryPath, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                return new
-                {
-                    Name = group.Key,
-                    Files = groupFiles,
-                    SizeBytes = groupFiles.Sum(file => file.SizeBytes),
-                    LastModifiedUtc = MaxDate(groupFiles.Select(file => file.LastModifiedUtc)),
-                    LastAccessedUtc = MaxDate(groupFiles.Select(file => file.LastAccessedUtc))
-                };
-            })
-            .OrderByDescending(group => group.SizeBytes)
-            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        _logger.Debug($"File groups built; groupCount={fileGroups.Count}");
-
-        foreach (var group in fileGroups)
-        {
-            if (_fileDetails.Count >= MaxVisibleFileRows)
-            {
-                break;
-            }
-
-            var pathText = group.Files.Count > 1 ? "[multiple]" : group.Files[0].DirectoryPath;
-            _fileDetails.Add(FileDetailRow.FromGroup(
-                group.Name,
-                pathText,
-                group.Files.Count,
-                group.SizeBytes,
-                group.LastModifiedUtc,
-                group.LastAccessedUtc));
-
-            if (group.Files.Count <= 1)
-            {
-                continue;
-            }
-
-            foreach (var file in group.Files)
-            {
-                if (_fileDetails.Count >= MaxVisibleFileRows)
-                {
-                    break;
-                }
-
-                _fileDetails.Add(FileDetailRow.FromFile(file));
-            }
-        }
-
-        FileDetailsSummaryTextBlock.Text = _fileDetails.Count >= MaxVisibleFileRows && node.FileCount > _fileDetails.Count
-            ? $"Showing {_fileDetails.Count:N0} rows from {node.FileCount:N0} files"
-            : $"{node.FileCount:N0} files";
-        _logger.Info($"File details populated; scope='{node.FullPath}', groupCount={fileGroups.Count}, visibleRows={_fileDetails.Count}, nodeFiles={node.FileCount}");
+        FileDetailsSummaryTextBlock.Text = snapshot.SummaryText;
+        _logger.Info($"File details populated; scope='{node.FullPath}', groupCount={snapshot.GroupCount}, visibleRows={_fileDetails.Count}, nodeFiles={node.FileCount}");
     }
 
     private void LogUiProgress(ScanProgress progress)
@@ -1107,75 +960,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private static DateTime? MaxDate(IEnumerable<DateTime?> dates)
-    {
-        DateTime? maxDate = null;
-        foreach (var date in dates)
-        {
-            if (date is not null && (maxDate is null || date.Value > maxDate.Value))
-            {
-                maxDate = date;
-            }
-        }
-
-        return maxDate;
-    }
-
     private IEnumerable<DirectoryUsageNode> FlattenDirectories(DirectoryUsageNode root)
     {
         _logger.Debug($"FlattenDirectories starting; root='{root.FullPath}'");
-        var pendingNodes = new Stack<DirectoryUsageNode>();
-        pendingNodes.Push(root);
-
-        while (pendingNodes.Count > 0)
-        {
-            var node = pendingNodes.Pop();
-            yield return node;
-
-            for (var childIndex = node.Children.Count - 1; childIndex >= 0; childIndex--)
-            {
-                pendingNodes.Push(node.Children[childIndex]);
-            }
-        }
+        return ScanViewBuilder.FlattenDirectories(root);
     }
 
     private IEnumerable<PieSlice> BuildSlices(DirectoryUsageNode node)
     {
         _logger.Debug($"BuildSlices starting; path='{node.FullPath}', sizeBytes={node.SizeBytes}, childCount={node.Children.Count}, directFileSizeBytes={node.DirectFileSizeBytes}");
-        if (node.SizeBytes <= 0)
-        {
-            yield break;
-        }
-
-        var pieces = node.Children
-            .Where(child => child.SizeBytes > 0)
-            .Select(child => (Label: child.DisplayName, child.SizeBytes, Node: (DirectoryUsageNode?)child))
-            .ToList();
-
-        if (node.DirectFileSizeBytes > 0)
-        {
-            pieces.Add(("Files in this folder", node.DirectFileSizeBytes, null));
-        }
-
-        var orderedPieces = pieces
-            .OrderByDescending(piece => piece.SizeBytes)
-            .ToList();
-
-        var visiblePieces = orderedPieces.Take(9).ToList();
-        var otherBytes = orderedPieces.Skip(9).Sum(piece => piece.SizeBytes);
-        if (otherBytes > 0)
-        {
-            visiblePieces.Add(("Other", otherBytes, null));
-        }
-
-        for (var i = 0; i < visiblePieces.Count; i++)
-        {
-            var brush = new SolidColorBrush(SliceColors[i % SliceColors.Length]);
-            brush.Freeze();
-            var percent = visiblePieces[i].SizeBytes * 100d / node.SizeBytes;
-            var explorerNode = visiblePieces[i].Node ?? node;
-            yield return new PieSlice(visiblePieces[i].Label, visiblePieces[i].SizeBytes, percent, brush, visiblePieces[i].Node, explorerNode);
-        }
+        return ScanViewBuilder.BuildSlices(node);
     }
 
     private void DrawPie(IReadOnlyList<PieSlice> slices)
@@ -1425,171 +1219,45 @@ public partial class MainWindow : Window
     private DirectoryUsageNode BuildRootFromFiles(string rootPath, IEnumerable<FileUsageItem> files)
     {
         using var operation = _logger.TimedOperation($"BuildRootFromFiles; rootPath='{rootPath}'", AppLogLevel.Debug);
-        var normalizedRoot = NormalizeDirectoryScope(rootPath);
-        var root = new DirectoryUsageNode(GetRootDisplayName(normalizedRoot), normalizedRoot);
-        var fileCount = 0;
-        var skippedOutsideRoot = 0;
-
-        foreach (var file in files)
-        {
-            if (TryAddFileToNodeTree(root, normalizedRoot, file))
-            {
-                fileCount++;
-            }
-            else
-            {
-                skippedOutsideRoot++;
-            }
-        }
-
-        root.FinalizeStats(root.SizeBytes);
-        _logger.Info($"Root rebuilt from file model; root='{root.FullPath}', files={fileCount}, skippedOutsideRoot={skippedOutsideRoot}, bytes={root.SizeBytes}");
+        var fileList = files.ToList();
+        var root = ScanViewBuilder.BuildRootFromFiles(rootPath, fileList);
+        _logger.Info($"Root rebuilt from file model; root='{root.FullPath}', files={root.FileCount}, inputFiles={fileList.Count}, bytes={root.SizeBytes}");
         return root;
-    }
-
-    private static bool TryAddFileToNodeTree(DirectoryUsageNode root, string normalizedRoot, FileUsageItem file)
-    {
-        if (!IsInsideRoot(file.FullPath, normalizedRoot))
-        {
-            return false;
-        }
-
-        root.AddAggregateFile(file.SizeBytes, file.LastModifiedUtc, file.LastAccessedUtc);
-
-        var relativeDirectory = IoPath.GetRelativePath(normalizedRoot, file.DirectoryPath);
-        var current = root;
-        if (!string.IsNullOrWhiteSpace(relativeDirectory) && relativeDirectory != ".")
-        {
-            foreach (var part in relativeDirectory.Split([IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
-            {
-                var childPath = IoPath.Combine(current.FullPath, part);
-                current = current.GetOrAddChild(part, childPath);
-                current.AddAggregateFile(file.SizeBytes, file.LastModifiedUtc, file.LastAccessedUtc);
-            }
-        }
-
-        current.AddDirectFile(file.SizeBytes);
-        return true;
     }
 
     private DirectoryUsageNode? FindDirectoryByPath(DirectoryUsageNode root, string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        return FlattenDirectories(root).FirstOrDefault(node => IsSameDirectory(node.FullPath, path));
+        return ScanViewBuilder.FindDirectoryByPath(root, path);
     }
 
     private DirectoryUsageNode? FindNearestExistingParentNode(DirectoryUsageNode root, string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        var current = path;
-        while (!string.IsNullOrWhiteSpace(current))
-        {
-            var node = FindDirectoryByPath(root, current);
-            if (node is not null)
-            {
-                return node;
-            }
-
-            var trimmed = current.TrimEnd(IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar);
-            var parent = Directory.GetParent(trimmed);
-            if (parent is null)
-            {
-                return null;
-            }
-
-            current = parent.FullName;
-        }
-
-        return null;
+        return ScanViewBuilder.FindNearestExistingParentNode(root, path);
     }
 
     private static IEnumerable<FileUsageItem> SortFiles(IEnumerable<FileUsageItem> files)
     {
-        return files
-            .OrderByDescending(file => file.SizeBytes)
-            .ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(file => file.FullPath, StringComparer.OrdinalIgnoreCase);
+        return ScanViewBuilder.SortFiles(files);
     }
 
     private static bool TryMapRenamedFile(FileUsageItem file, string oldPath, string newPath, ShellItemKind itemKind, out FileUsageItem updatedFile)
     {
-        if (!IsFileWithinShellItem(file.FullPath, oldPath, itemKind))
-        {
-            updatedFile = file;
-            return false;
-        }
-
-        var trimmedOldPath = itemKind == ShellItemKind.Directory ? TrimDirectoryPath(oldPath) : oldPath;
-        var trimmedNewPath = itemKind == ShellItemKind.Directory ? TrimDirectoryPath(newPath) : newPath;
-        var newFullPath = itemKind == ShellItemKind.Directory
-            ? trimmedNewPath + file.FullPath[trimmedOldPath.Length..]
-            : newPath;
-        var directoryPath = IoPath.GetDirectoryName(newFullPath) ?? string.Empty;
-        updatedFile = file with
-        {
-            Name = IoPath.GetFileName(newFullPath),
-            FullPath = newFullPath,
-            DirectoryPath = directoryPath
-        };
-        return true;
+        return ScanViewBuilder.TryMapRenamedFile(file, oldPath, newPath, itemKind, out updatedFile);
     }
 
     private static bool IsFileWithinShellItem(string filePath, string shellItemPath, ShellItemKind itemKind)
     {
-        if (itemKind == ShellItemKind.File)
-        {
-            return string.Equals(IoPath.GetFullPath(filePath), IoPath.GetFullPath(shellItemPath), StringComparison.OrdinalIgnoreCase);
-        }
-
-        return IsInsideRoot(filePath, NormalizeDirectoryScope(shellItemPath));
+        return ScanViewBuilder.IsFileWithinShellItem(filePath, shellItemPath, itemKind);
     }
 
     private static string? TransformDirectoryPathAfterRename(string? path, string oldPath, string newPath, ShellItemKind itemKind)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return path;
-        }
-
-        if (itemKind == ShellItemKind.File)
-        {
-            return path;
-        }
-
-        var oldScope = NormalizeDirectoryScope(oldPath);
-        if (!IsInsideRoot(path, oldScope) && !IsSameDirectory(path, oldPath))
-        {
-            return path;
-        }
-
-        var trimmedOld = TrimDirectoryPath(oldPath);
-        var trimmedNew = TrimDirectoryPath(newPath);
-        return trimmedNew + TrimDirectoryPath(path)[trimmedOld.Length..];
+        return ScanViewBuilder.TransformDirectoryPathAfterRename(path, oldPath, newPath, itemKind);
     }
 
     private static string? ChooseSelectionAfterDelete(string? previousSelectionPath, string deletedPath, ShellItemKind itemKind)
     {
-        if (string.IsNullOrWhiteSpace(previousSelectionPath))
-        {
-            return null;
-        }
-
-        if (itemKind == ShellItemKind.File)
-        {
-            return previousSelectionPath;
-        }
-
-        return IsInsideRoot(previousSelectionPath, NormalizeDirectoryScope(deletedPath)) || IsSameDirectory(previousSelectionPath, deletedPath)
-            ? Directory.GetParent(TrimDirectoryPath(deletedPath))?.FullName
-            : previousSelectionPath;
+        return ScanViewBuilder.ChooseSelectionAfterDelete(previousSelectionPath, deletedPath, itemKind);
     }
 
     private async Task WaitForShellFileOperationAsync(string path, ShellItemKind itemKind, bool expectedExists)
@@ -1610,86 +1278,62 @@ public partial class MainWindow : Window
 
     private static bool TryGetExistingShellItem(string path, ShellItemKind itemKind, out string existingPath)
     {
-        existingPath = NormalizeShellItemPath(path, itemKind);
-
-        return PathExists(existingPath, itemKind);
+        return ScanViewBuilder.TryGetExistingShellItem(path, itemKind, out existingPath);
     }
 
     private static bool PathExists(string path, ShellItemKind itemKind)
     {
-        return itemKind == ShellItemKind.Directory ? Directory.Exists(path) : System.IO.File.Exists(path);
+        return ScanViewBuilder.PathExists(path, itemKind);
     }
 
     private static string NormalizeShellItemPath(string path, ShellItemKind itemKind)
     {
-        var fullPath = IoPath.GetFullPath(path);
-        return itemKind == ShellItemKind.Directory
-            ? TrimDirectoryPath(fullPath)
-            : fullPath;
+        return ScanViewBuilder.NormalizeShellItemPath(path, itemKind);
     }
 
     private static string GetShellItemName(string path, ShellItemKind itemKind)
     {
-        var normalized = NormalizeShellItemPath(path, itemKind);
-        return itemKind == ShellItemKind.Directory && IsDriveRoot(normalized)
-            ? normalized
-            : IoPath.GetFileName(normalized);
+        return ScanViewBuilder.GetShellItemName(path, itemKind);
     }
 
     private static string? GetShellItemParentPath(string path, ShellItemKind itemKind)
     {
-        var normalized = NormalizeShellItemPath(path, itemKind);
-        return itemKind == ShellItemKind.Directory
-            ? Directory.GetParent(normalized)?.FullName
-            : IoPath.GetDirectoryName(normalized);
+        return ScanViewBuilder.GetShellItemParentPath(path, itemKind);
     }
 
     private static bool IsDeleteCommand(string verb, string menuText)
     {
-        return verb.Equals("delete", StringComparison.OrdinalIgnoreCase)
-            || menuText.Replace("&", string.Empty, StringComparison.Ordinal).Contains("delete", StringComparison.OrdinalIgnoreCase);
+        return ScanViewBuilder.IsDeleteCommand(verb, menuText);
     }
 
     private static bool IsRenameCommand(string verb, string menuText)
     {
-        return verb.Equals("rename", StringComparison.OrdinalIgnoreCase)
-            || menuText.Replace("&", string.Empty, StringComparison.Ordinal).Contains("rename", StringComparison.OrdinalIgnoreCase);
+        return ScanViewBuilder.IsRenameCommand(verb, menuText);
     }
 
     private static bool IsSameDirectory(string left, string right)
     {
-        var normalizedLeft = TrimDirectoryPath(left);
-        var normalizedRight = TrimDirectoryPath(right);
-        return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+        return ScanViewBuilder.IsSameDirectory(left, right);
     }
 
     private static string TrimDirectoryPath(string path)
     {
-        var fullPath = IoPath.GetFullPath(path);
-        var root = IoPath.GetPathRoot(fullPath);
-        if (!string.IsNullOrWhiteSpace(root) && string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase))
-        {
-            return fullPath;
-        }
-
-        return fullPath.TrimEnd(IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar);
+        return ScanViewBuilder.TrimDirectoryPath(path);
     }
 
     private static bool IsDriveRoot(string path)
     {
-        var root = IoPath.GetPathRoot(path);
-        return !string.IsNullOrWhiteSpace(root) && string.Equals(IoPath.GetFullPath(path), root, StringComparison.OrdinalIgnoreCase);
+        return ScanViewBuilder.IsDriveRoot(path);
     }
 
     private static bool IsInsideRoot(string filePath, string normalizedRoot)
     {
-        return IoPath.GetFullPath(filePath).StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
+        return ScanViewBuilder.IsInsideRoot(filePath, normalizedRoot);
     }
 
     private static string GetRootDisplayName(string normalizedRoot)
     {
-        var trimmed = normalizedRoot.TrimEnd(IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar);
-        return trimmed.EndsWith(':') ? normalizedRoot : IoPath.GetFileName(trimmed);
+        return ScanViewBuilder.GetRootDisplayName(normalizedRoot);
     }
 
     private static T? FindVisualAncestor<T>(DependencyObject? source) where T : DependencyObject
@@ -1842,13 +1486,11 @@ public partial class MainWindow : Window
 
     private static string EnsureTrailingSeparator(string path)
     {
-        var fullPath = IoPath.GetFullPath(path);
-        return fullPath.EndsWith(IoPath.DirectorySeparatorChar) ? fullPath : fullPath + IoPath.DirectorySeparatorChar;
+        return ScanViewBuilder.EnsureTrailingSeparator(path);
     }
 
     private static string NormalizeDirectoryScope(string path)
     {
-        var fullPath = IoPath.GetFullPath(path);
-        return fullPath.EndsWith(IoPath.DirectorySeparatorChar) ? fullPath : fullPath + IoPath.DirectorySeparatorChar;
+        return ScanViewBuilder.NormalizeDirectoryScope(path);
     }
 }

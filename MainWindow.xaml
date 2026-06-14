@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:models="clr-namespace:EverythingDiskUsage.Models"
         mc:Ignorable="d"
-        Icon="Assets/AppIcon.ico"
+        Icon="pack://siteoforigin:,,,/Assets/AppIcon.ico"
         Title="Everything Disk Usage"
         Height="760"
         Width="1180"
