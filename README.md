@@ -77,6 +77,21 @@ The Azure publishing script builds the app, creates the release ZIP, uploads it 
 
 This requires Azure CLI access to the `installmonitordl` storage account in the `rg-installmonitor-download` resource group.
 
+## Settings
+
+The app stores user settings in:
+
+```text
+%LOCALAPPDATA%\EverythingDiskUsage\settings.json
+```
+
+Open the **Settings** tab in the app to change:
+
+- Minimum log level: Verbose, Debug, Info, Warning, Error, or Critical
+- Whether every accepted Everything SDK file result is logged
+- Whether log lines are also written to debug output
+- How many historical log files are retained
+
 ## Logs
 
 The app writes verbose logs to:

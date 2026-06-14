@@ -1,8 +1,9 @@
-﻿using EverythingDiskUsage.Models;
+using EverythingDiskUsage.Models;
 using EverythingDiskUsage.Native;
 using EverythingDiskUsage.Services;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -42,11 +43,23 @@ public partial class MainWindow : Window
         MediaColor.FromRgb(48, 64, 84)
     ];
 
-    private readonly DiskUsageAnalyzer _analyzer = new();
+    private readonly IDiskUsageAnalyzer _analyzer;
+    private readonly IAppLogger _logger;
+    private readonly IAppSettingsService _settingsService;
+    private readonly IShellContextMenuService _shellContextMenuService;
     private readonly ObservableCollection<DirectoryUsageNode> _treeRoots = [];
     private readonly ObservableCollection<DirectoryUsageNode> _directoryDetails = [];
     private readonly ObservableCollection<FileDetailRow> _fileDetails = [];
     private readonly ObservableCollection<DuplicateFileRow> _duplicateRows = [];
+    private readonly ObservableCollection<LogLevelOption> _logLevelOptions =
+    [
+        new("Verbose", AppLogLevel.Trace),
+        new("Debug", AppLogLevel.Debug),
+        new("Info", AppLogLevel.Info),
+        new("Warning", AppLogLevel.Warning),
+        new("Error", AppLogLevel.Error),
+        new("Critical", AppLogLevel.Critical)
+    ];
     private readonly Forms.NotifyIcon _notifyIcon = new();
     private CancellationTokenSource? _scanCancellation;
     private DirectoryUsageNode? _selectedNode;
@@ -54,6 +67,7 @@ public partial class MainWindow : Window
     private string? _currentRootPath;
     private IReadOnlyList<FileUsageItem> _allFilesSorted = [];
     private bool _isUpdatingScanView;
+    private AppSettings _appSettings = new();
     private DateTime _lastUiProgressLogUtc = DateTime.MinValue;
     private long _lastUiProgressLoggedFiles;
 
@@ -69,6 +83,8 @@ public partial class MainWindow : Window
         IReadOnlyList<FileUsageItem> Files,
         DuplicateRowsSnapshot Duplicates);
 
+    private sealed record LogLevelOption(string DisplayName, AppLogLevel Level);
+
     private enum ShellItemKind
     {
         File,
@@ -76,20 +92,35 @@ public partial class MainWindow : Window
     }
 
     public MainWindow()
+        : this(new DiskUsageAnalyzer(), new AppLoggerAdapter(), new AppSettingsServiceAdapter(), new ShellContextMenuService())
     {
-        AppLogger.Info("MainWindow constructor starting");
+    }
+
+    public MainWindow(
+        IDiskUsageAnalyzer analyzer,
+        IAppLogger logger,
+        IAppSettingsService settingsService,
+        IShellContextMenuService shellContextMenuService)
+    {
+        _analyzer = analyzer;
+        _logger = logger;
+        _settingsService = settingsService;
+        _shellContextMenuService = shellContextMenuService;
+
+        _logger.Info("MainWindow constructor starting");
         InitializeComponent();
         UsageTree.ItemsSource = _treeRoots;
         DirectoryDetailsGrid.ItemsSource = _directoryDetails;
         FileDetailsGrid.ItemsSource = _fileDetails;
         DuplicatesGrid.ItemsSource = _duplicateRows;
+        ConfigureSettingsUi();
         ConfigureNotifications();
-        AppLogger.Info("MainWindow constructor completed; item sources assigned");
+        _logger.Info("MainWindow constructor completed; item sources assigned");
     }
 
     protected override void OnClosed(EventArgs e)
     {
-        AppLogger.Info("MainWindow closing; disposing notification icon");
+        _logger.Info("MainWindow closing; disposing notification icon");
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         base.OnClosed(e);
@@ -97,7 +128,7 @@ public partial class MainWindow : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        using var operation = AppLogger.TimedOperation("Window_Loaded");
+        using var operation = _logger.TimedOperation("Window_Loaded");
 
         var readyDrives = DriveInfo.GetDrives()
             .Where(drive => drive.IsReady && drive.DriveType is DriveType.Fixed or DriveType.Removable)
@@ -108,12 +139,12 @@ public partial class MainWindow : Window
         {
             try
             {
-                AppLogger.Info($"Drive ready: name='{drive.Name}', type={drive.DriveType}, format='{drive.DriveFormat}', totalBytes={drive.TotalSize}, availableBytes={drive.AvailableFreeSpace}, volumeLabel='{drive.VolumeLabel}'");
+                _logger.Info($"Drive ready: name='{drive.Name}', type={drive.DriveType}, format='{drive.DriveFormat}', totalBytes={drive.TotalSize}, availableBytes={drive.AvailableFreeSpace}, volumeLabel='{drive.VolumeLabel}'");
             }
             catch (Exception ex)
             {
-                AppLogger.Warning($"Drive ready but metadata logging failed; name='{drive.Name}', type={drive.DriveType}");
-                AppLogger.Error("Drive metadata logging failure", ex);
+                _logger.Warning($"Drive ready but metadata logging failed; name='{drive.Name}', type={drive.DriveType}");
+                _logger.Error("Drive metadata logging failure", ex);
             }
         }
 
@@ -126,7 +157,7 @@ public partial class MainWindow : Window
             ?? drives.FirstOrDefault()
             ?? @"C:\";
 
-        AppLogger.Info($"Drive selector initialized; count={drives.Count}; defaultDrive='{defaultDrive}'");
+        _logger.Info($"Drive selector initialized; count={drives.Count}; defaultDrive='{defaultDrive}'");
 
         DriveComboBox.SelectedItem = defaultDrive;
         RootPathTextBox.Text = defaultDrive;
@@ -138,7 +169,7 @@ public partial class MainWindow : Window
     {
         if (DriveComboBox.SelectedItem is string driveName)
         {
-            AppLogger.Info($"Drive selection changed; drive='{driveName}'");
+            _logger.Info($"Drive selection changed; drive='{driveName}'");
             RootPathTextBox.Text = driveName;
             UpdateDriveSummary(driveName, null);
         }
@@ -148,7 +179,7 @@ public partial class MainWindow : Window
     {
         if (e.Key == Key.Enter)
         {
-            AppLogger.Info($"Root path textbox Enter pressed; path='{RootPathTextBox.Text}'");
+            _logger.Info($"Root path textbox Enter pressed; path='{RootPathTextBox.Text}'");
             e.Handled = true;
             _ = StartScanAsync();
         }
@@ -157,7 +188,7 @@ public partial class MainWindow : Window
     private void BrowseButton_Click(object sender, RoutedEventArgs e)
     {
         var initialDirectory = Directory.Exists(RootPathTextBox.Text) ? RootPathTextBox.Text : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        AppLogger.Info($"Browse requested; currentPath='{RootPathTextBox.Text}', initialDirectory='{initialDirectory}'");
+        _logger.Info($"Browse requested; currentPath='{RootPathTextBox.Text}', initialDirectory='{initialDirectory}'");
 
         using var dialog = new Forms.FolderBrowserDialog
         {
@@ -167,7 +198,7 @@ public partial class MainWindow : Window
         };
 
         var dialogResult = dialog.ShowDialog();
-        AppLogger.Info($"Browse dialog closed; result={dialogResult}; selectedPath='{dialog.SelectedPath}'");
+        _logger.Info($"Browse dialog closed; result={dialogResult}; selectedPath='{dialog.SelectedPath}'");
 
         if (dialogResult == Forms.DialogResult.OK)
         {
@@ -178,13 +209,13 @@ public partial class MainWindow : Window
 
     private void ScanButton_Click(object sender, RoutedEventArgs e)
     {
-        AppLogger.Info($"Scan button clicked; path='{RootPathTextBox.Text}'");
+        _logger.Info($"Scan button clicked; path='{RootPathTextBox.Text}'");
         _ = StartScanAsync();
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
-        AppLogger.Warning($"Cancel button clicked; activeScan={_scanCancellation is not null}");
+        _logger.Warning($"Cancel button clicked; activeScan={_scanCancellation is not null}");
         _scanCancellation?.Cancel();
     }
 
@@ -192,21 +223,21 @@ public partial class MainWindow : Window
     {
         if (_scanCancellation is not null)
         {
-            AppLogger.Warning("StartScanAsync ignored because a scan is already running");
+            _logger.Warning("StartScanAsync ignored because a scan is already running");
             return;
         }
 
         var rootPath = RootPathTextBox.Text.Trim();
-        AppLogger.Info($"StartScanAsync requested; rawPath='{RootPathTextBox.Text}', trimmedPath='{rootPath}'");
+        _logger.Info($"StartScanAsync requested; rawPath='{RootPathTextBox.Text}', trimmedPath='{rootPath}'");
         if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
         {
-            AppLogger.Warning($"StartScanAsync rejected path; exists={Directory.Exists(rootPath)}; path='{rootPath}'");
+            _logger.Warning($"StartScanAsync rejected path; exists={Directory.Exists(rootPath)}; path='{rootPath}'");
             System.Windows.MessageBox.Show(this, "Choose an existing folder or drive root.", "Path not found", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         _scanCancellation = new CancellationTokenSource();
-        AppLogger.Info($"Scan cancellation source created; tokenHash={_scanCancellation.Token.GetHashCode()}");
+        _logger.Info($"Scan cancellation source created; tokenHash={_scanCancellation.Token.GetHashCode()}");
         SetScanning(true);
         _treeRoots.Clear();
         _directoryDetails.Clear();
@@ -225,20 +256,20 @@ public partial class MainWindow : Window
         FileDetailsSummaryTextBlock.Text = string.Empty;
         _duplicateRows.Clear();
         DuplicatesSummaryTextBlock.Text = string.Empty;
-        AppLogger.Debug("Cleared previous scan UI state");
+        _logger.Debug("Cleared previous scan UI state");
 
         var progress = new Progress<ScanProgress>(UpdateProgress);
 
         try
         {
-            AppLogger.Info($"Calling DiskUsageAnalyzer.ScanAsync; rootPath='{rootPath}'");
+            _logger.Info($"Calling DiskUsageAnalyzer.ScanAsync; rootPath='{rootPath}'");
             var result = await _analyzer.ScanAsync(rootPath, progress, _scanCancellation.Token);
-            AppLogger.Info($"ScanAsync completed; totalResults={result.TotalResults}; files={result.Root.FileCount}; bytes={result.Root.SizeBytes}; elapsedMs={result.Elapsed.TotalMilliseconds:0}");
+            _logger.Info($"ScanAsync completed; totalResults={result.TotalResults}; files={result.Root.FileCount}; bytes={result.Root.SizeBytes}; elapsedMs={result.Elapsed.TotalMilliseconds:0}");
             _currentRoot = result.Root;
             _currentRootPath = result.Root.FullPath;
             _treeRoots.Add(result.Root);
 
-            using (AppLogger.TimedOperation($"Sort file details; fileCount={result.Files.Count}"))
+            using (_logger.TimedOperation($"Sort file details; fileCount={result.Files.Count}"))
             {
                 _allFilesSorted = result.Files
                     .OrderByDescending(file => file.SizeBytes)
@@ -260,13 +291,13 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
-            AppLogger.Warning($"Scan cancelled by request; path='{rootPath}'");
+            _logger.Warning($"Scan cancelled by request; path='{rootPath}'");
             StatusTextBlock.Text = "Scan cancelled";
             SummaryTextBlock.Text = string.Empty;
         }
         catch (Exception ex)
         {
-            AppLogger.Error($"Scan failed; path='{rootPath}'", ex);
+            _logger.Error($"Scan failed; path='{rootPath}'", ex);
             StatusTextBlock.Text = ex.Message;
             SummaryTextBlock.Text = string.Empty;
             SdkStatusTextBlock.Text = "SDK scan failed";
@@ -274,7 +305,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            AppLogger.Info("Scan finally block entered; disposing cancellation source and resetting UI state");
+            _logger.Info("Scan finally block entered; disposing cancellation source and resetting UI state");
             _scanCancellation?.Dispose();
             _scanCancellation = null;
             SetScanning(false);
@@ -283,7 +314,7 @@ public partial class MainWindow : Window
 
     private void SetScanning(bool isScanning)
     {
-        AppLogger.Info($"SetScanning({isScanning})");
+        _logger.Debug($"SetScanning({isScanning})");
         ScanButton.IsEnabled = !isScanning;
         BrowseButton.IsEnabled = !isScanning;
         DriveComboBox.IsEnabled = !isScanning;
@@ -314,19 +345,137 @@ public partial class MainWindow : Window
             _notifyIcon.Visible = true;
             _notifyIcon.BalloonTipClicked += (_, _) => ActivateFromNotification();
             _notifyIcon.DoubleClick += (_, _) => ActivateFromNotification();
-            AppLogger.Info("Windows notification icon configured");
+            _logger.Info("Windows notification icon configured");
         }
         catch (Exception ex)
         {
-            AppLogger.Error("Failed to configure Windows notification icon", ex);
+            _logger.Error("Failed to configure Windows notification icon", ex);
         }
+    }
+
+    private void ConfigureSettingsUi()
+    {
+        LogLevelComboBox.ItemsSource = _logLevelOptions;
+        LogLevelComboBox.DisplayMemberPath = nameof(LogLevelOption.DisplayName);
+        LogLevelComboBox.SelectedValuePath = nameof(LogLevelOption.Level);
+        LoadSettingsIntoUi(_settingsService.Load());
+        SettingsFilePathTextBlock.Text = _settingsService.SettingsFilePath;
+        LogDirectoryPathTextBlock.Text = _logger.LogDirectory;
+        CurrentLogFilePathTextBlock.Text = _logger.LogFilePath;
+        _logger.Info($"Settings UI initialized; settingsFile='{_settingsService.SettingsFilePath}', logDirectory='{_logger.LogDirectory}', currentLog='{_logger.LogFilePath}'");
+    }
+
+    private void LoadSettingsIntoUi(AppSettings settings)
+    {
+        _logger.Debug($"Loading settings into UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
+        _appSettings = _settingsService.Normalize(settings);
+        LogLevelComboBox.SelectedValue = _appSettings.MinimumLogLevel;
+        LogEachSdkFileCheckBox.IsChecked = _appSettings.LogEachSdkFile;
+        LogToDebugOutputCheckBox.IsChecked = _appSettings.LogToDebugOutput;
+        RetainedLogFilesTextBox.Text = _appSettings.RetainedLogFiles.ToString(CultureInfo.InvariantCulture);
+        SettingsStatusTextBlock.Text = string.Empty;
+    }
+
+    private void SaveSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadSettingsFromUi(out var settings))
+        {
+            return;
+        }
+
+        try
+        {
+            _settingsService.Save(settings);
+            _logger.ApplySettings(settings, "Settings UI");
+            _appSettings = settings.Clone();
+            SettingsStatusTextBlock.Text = $"Saved {DateTime.Now:h:mm:ss tt}";
+            _logger.Info($"Settings saved from UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to save settings", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "Save settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ResetSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var defaults = _settingsService.CreateDefault();
+            LoadSettingsIntoUi(defaults);
+            _settingsService.Save(defaults);
+            _logger.ApplySettings(defaults, "Settings UI reset");
+            SettingsStatusTextBlock.Text = $"Reset {DateTime.Now:h:mm:ss tt}";
+            _logger.Info("Settings reset to defaults from UI");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to reset settings", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "Reset settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void OpenLogFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        _logger.Info($"Open log folder requested from settings UI; path='{_logger.LogDirectory}'");
+        OpenInFileExplorer(_logger.LogDirectory, "settings log folder");
+    }
+
+    private void OpenSettingsFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!System.IO.File.Exists(_settingsService.SettingsFilePath))
+            {
+                _settingsService.Save(_appSettings);
+            }
+
+            _logger.Info($"Open settings file requested from settings UI; path='{_settingsService.SettingsFilePath}'");
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{_settingsService.SettingsFilePath}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to open settings file", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "Open settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private bool TryReadSettingsFromUi(out AppSettings settings)
+    {
+        _logger.Debug($"Reading settings from UI; selectedLogLevel='{LogLevelComboBox.SelectedValue}'; retainedLogFilesText='{RetainedLogFilesTextBox.Text}'");
+        settings = new AppSettings();
+        var selectedLevel = LogLevelComboBox.SelectedValue is AppLogLevel level ? level : AppLogLevel.Info;
+        if (!int.TryParse(RetainedLogFilesTextBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var retainedLogFiles) || retainedLogFiles < 1 || retainedLogFiles > 500)
+        {
+            _logger.Warning($"Settings validation failed; retainedLogFilesText='{RetainedLogFilesTextBox.Text}'");
+            System.Windows.MessageBox.Show(this, "Retained log files must be a number from 1 to 500.", "Invalid settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RetainedLogFilesTextBox.Focus();
+            RetainedLogFilesTextBox.SelectAll();
+            return false;
+        }
+
+        settings = new AppSettings
+        {
+            MinimumLogLevel = selectedLevel,
+            LogEachSdkFile = LogEachSdkFileCheckBox.IsChecked == true,
+            LogToDebugOutput = LogToDebugOutputCheckBox.IsChecked == true,
+            RetainedLogFiles = retainedLogFiles
+        };
+        _logger.Debug($"Settings read from UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
+        return true;
     }
 
     private void ShowSearchCompleteNotificationIfNeeded(string rootPath, ScanResult result)
     {
         if (IsActive)
         {
-            AppLogger.Info($"Search completion notification skipped because main window is focused; rootPath='{rootPath}'");
+            _logger.Info($"Search completion notification skipped because main window is focused; rootPath='{rootPath}'");
             return;
         }
 
@@ -334,18 +483,18 @@ public partial class MainWindow : Window
         {
             var title = "Everything Disk Usage scan complete";
             var message = $"{rootPath}\n{result.Root.FileCount:N0} files, {result.Root.SizeText}, {result.Elapsed.TotalSeconds:0.0}s";
-            AppLogger.Info($"Showing search completion notification; rootPath='{rootPath}', files={result.Root.FileCount}, bytes={result.Root.SizeBytes}, elapsedMs={result.Elapsed.TotalMilliseconds:0}, isActive={IsActive}");
+            _logger.Info($"Showing search completion notification; rootPath='{rootPath}', files={result.Root.FileCount}, bytes={result.Root.SizeBytes}, elapsedMs={result.Elapsed.TotalMilliseconds:0}, isActive={IsActive}");
             _notifyIcon.ShowBalloonTip(8000, title, message, Forms.ToolTipIcon.Info);
         }
         catch (Exception ex)
         {
-            AppLogger.Error($"Failed to show search completion notification; rootPath='{rootPath}'", ex);
+            _logger.Error($"Failed to show search completion notification; rootPath='{rootPath}'", ex);
         }
     }
 
     private void ActivateFromNotification()
     {
-        AppLogger.Info("Notification activation requested");
+        _logger.Info("Notification activation requested");
         if (WindowState == WindowState.Minimized)
         {
             WindowState = WindowState.Normal;
@@ -374,7 +523,7 @@ public partial class MainWindow : Window
     {
         if (e.NewValue is DirectoryUsageNode node)
         {
-            AppLogger.Info($"Tree selection changed; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
+            _logger.Info($"Tree selection changed; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
             _selectedNode = node;
             RenderNode(node);
             SelectDirectoryDetailsNode(node);
@@ -398,7 +547,7 @@ public partial class MainWindow : Window
     {
         if (DirectoryDetailsGrid.SelectedItem is DirectoryUsageNode node)
         {
-            AppLogger.Info($"Directory details selection changed; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
+            _logger.Info($"Directory details selection changed; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
             _selectedNode = node;
             RenderNode(node);
             UpdateVisibleFiles(node);
@@ -449,19 +598,19 @@ public partial class MainWindow : Window
     {
         if (_scanCancellation is not null)
         {
-            AppLogger.Warning($"Shell context menu skipped during active scan; source='{source}', path='{path}'");
+            _logger.Warning($"Shell context menu skipped during active scan; source='{source}', path='{path}'");
             return;
         }
 
         if (_isUpdatingScanView)
         {
-            AppLogger.Warning($"Shell context menu skipped while scan view is updating; source='{source}', path='{path}'");
+            _logger.Warning($"Shell context menu skipped while scan view is updating; source='{source}', path='{path}'");
             return;
         }
 
         if (!TryGetExistingShellItem(path, itemKind, out var shellPath))
         {
-            AppLogger.Warning($"Shell context menu target no longer exists; source='{source}', path='{path}'");
+            _logger.Warning($"Shell context menu target no longer exists; source='{source}', path='{path}'");
             System.Windows.MessageBox.Show(this, "That item no longer exists. Refreshing the current scan view.", "Item not found", MessageBoxButton.OK, MessageBoxImage.Information);
             await RebuildUiFromCurrentFilesAsync(_selectedNode?.FullPath, "Removed stale item from view");
             return;
@@ -471,8 +620,8 @@ public partial class MainWindow : Window
         {
             var screenPoint = PointToScreen(localPoint);
             var windowHandle = new WindowInteropHelper(this).Handle;
-            AppLogger.Info($"Showing shell context menu; source='{source}', kind={itemKind}, path='{shellPath}', x={screenPoint.X:0}, y={screenPoint.Y:0}");
-            var result = ShellContextMenu.Show(
+            _logger.Info($"Showing shell context menu; source='{source}', kind={itemKind}, path='{shellPath}', x={screenPoint.X:0}, y={screenPoint.Y:0}");
+            var result = _shellContextMenuService.Show(
                 windowHandle,
                 shellPath,
                 (int)Math.Round(screenPoint.X),
@@ -481,11 +630,11 @@ public partial class MainWindow : Window
 
             if (!result.CommandSelected)
             {
-                AppLogger.Debug($"Shell context menu dismissed without command; source='{source}', path='{shellPath}'");
+                _logger.Debug($"Shell context menu dismissed without command; source='{source}', path='{shellPath}'");
                 return;
             }
 
-            AppLogger.Info($"Shell context menu command selected; source='{source}', path='{shellPath}', verb='{result.Verb}', menuText='{result.MenuText}', shellInvoked={result.ShellInvoked}");
+            _logger.Info($"Shell context menu command selected; source='{source}', path='{shellPath}', verb='{result.Verb}', menuText='{result.MenuText}', shellInvoked={result.ShellInvoked}");
 
             if (IsRenameCommand(result.Verb, result.MenuText))
             {
@@ -500,7 +649,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppLogger.Error($"Shell context menu failed; source='{source}', path='{path}'", ex);
+            _logger.Error($"Shell context menu failed; source='{source}', path='{path}'", ex);
             System.Windows.MessageBox.Show(this, ex.Message, "Shell menu failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -512,7 +661,7 @@ public partial class MainWindow : Window
 
         if (PathExists(deletedPath, itemKind))
         {
-            AppLogger.Info($"Delete command completed but target still exists; no UI change applied; path='{deletedPath}', kind={itemKind}");
+            _logger.Info($"Delete command completed but target still exists; no UI change applied; path='{deletedPath}', kind={itemKind}");
             return;
         }
 
@@ -522,7 +671,7 @@ public partial class MainWindow : Window
             .ToList();
 
         var removedCount = beforeCount - _allFilesSorted.Count;
-        AppLogger.Info($"Delete reflected in scan model; path='{deletedPath}', kind={itemKind}, removedFiles={removedCount}");
+        _logger.Info($"Delete reflected in scan model; path='{deletedPath}', kind={itemKind}, removedFiles={removedCount}");
         await RebuildUiFromCurrentFilesAsync(ChooseSelectionAfterDelete(previousSelectionPath, deletedPath, itemKind), $"Deleted {removedCount:N0} indexed file{(removedCount == 1 ? string.Empty : "s")}");
     }
 
@@ -533,14 +682,14 @@ public partial class MainWindow : Window
         var oldName = GetShellItemName(normalizedOldPath, itemKind);
         if (string.IsNullOrWhiteSpace(oldName))
         {
-            AppLogger.Warning($"Rename skipped because target name could not be resolved; path='{oldPath}', kind={itemKind}");
+            _logger.Warning($"Rename skipped because target name could not be resolved; path='{oldPath}', kind={itemKind}");
             return;
         }
 
         var newName = ShowRenameDialog(oldName);
         if (string.IsNullOrWhiteSpace(newName) || newName.Equals(oldName, StringComparison.Ordinal))
         {
-            AppLogger.Info($"Rename cancelled or unchanged; path='{oldPath}', kind={itemKind}");
+            _logger.Info($"Rename cancelled or unchanged; path='{oldPath}', kind={itemKind}");
             return;
         }
 
@@ -553,7 +702,7 @@ public partial class MainWindow : Window
         var parentPath = GetShellItemParentPath(normalizedOldPath, itemKind);
         if (string.IsNullOrWhiteSpace(parentPath))
         {
-            AppLogger.Warning($"Rename skipped because target parent could not be resolved; path='{oldPath}', kind={itemKind}");
+            _logger.Warning($"Rename skipped because target parent could not be resolved; path='{oldPath}', kind={itemKind}");
             return;
         }
 
@@ -566,7 +715,7 @@ public partial class MainWindow : Window
 
         try
         {
-            AppLogger.Info($"Renaming shell item; oldPath='{normalizedOldPath}', newPath='{newPath}', kind={itemKind}");
+            _logger.Info($"Renaming shell item; oldPath='{normalizedOldPath}', newPath='{newPath}', kind={itemKind}");
             if (itemKind == ShellItemKind.Directory)
             {
                 Directory.Move(normalizedOldPath, newPath);
@@ -581,7 +730,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppLogger.Error($"Rename failed; oldPath='{normalizedOldPath}', newPath='{newPath}', kind={itemKind}", ex);
+            _logger.Error($"Rename failed; oldPath='{normalizedOldPath}', newPath='{newPath}', kind={itemKind}", ex);
             System.Windows.MessageBox.Show(this, ex.Message, "Rename failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -590,7 +739,7 @@ public partial class MainWindow : Window
     {
         if (_currentRootPath is null)
         {
-            AppLogger.Warning($"Rename model refresh skipped because there is no current root; oldPath='{oldPath}', newPath='{newPath}', kind={itemKind}");
+            _logger.Warning($"Rename model refresh skipped because there is no current root; oldPath='{oldPath}', newPath='{newPath}', kind={itemKind}");
             return;
         }
 
@@ -615,12 +764,12 @@ public partial class MainWindow : Window
         {
             _currentRootPath = NormalizeDirectoryScope(normalizedNewPath);
             RootPathTextBox.Text = _currentRootPath;
-            AppLogger.Info($"Current root path updated after root folder rename; newRoot='{_currentRootPath}'");
+            _logger.Info($"Current root path updated after root folder rename; newRoot='{_currentRootPath}'");
         }
 
         _allFilesSorted = SortFiles(updatedFiles).ToList();
         var selectionPath = TransformDirectoryPathAfterRename(previousSelectionPath, normalizedOldPath, normalizedNewPath, itemKind);
-        AppLogger.Info($"Rename reflected in scan model; oldPath='{normalizedOldPath}', newPath='{normalizedNewPath}', kind={itemKind}, changedFiles={changedFileCount}");
+        _logger.Info($"Rename reflected in scan model; oldPath='{normalizedOldPath}', newPath='{normalizedNewPath}', kind={itemKind}, changedFiles={changedFileCount}");
         await RebuildUiFromCurrentFilesAsync(selectionPath, $"Renamed {GetShellItemName(normalizedNewPath, itemKind)}");
     }
 
@@ -628,12 +777,13 @@ public partial class MainWindow : Window
     {
         if (_currentRootPath is null)
         {
+            _logger.Warning($"RebuildUiFromCurrentFilesAsync skipped because there is no current root; preferredSelection='{preferredSelectionPath ?? string.Empty}', status='{statusText}'");
             return;
         }
 
         if (_isUpdatingScanView)
         {
-            AppLogger.Warning($"RebuildUiFromCurrentFilesAsync skipped because another update is already running; preferredSelection='{preferredSelectionPath ?? string.Empty}', status='{statusText}'");
+            _logger.Warning($"RebuildUiFromCurrentFilesAsync skipped because another update is already running; preferredSelection='{preferredSelectionPath ?? string.Empty}', status='{statusText}'");
             return;
         }
 
@@ -642,6 +792,7 @@ public partial class MainWindow : Window
         _isUpdatingScanView = true;
         ScanProgressBar.IsIndeterminate = true;
         StatusTextBlock.Text = "Updating scan view";
+        _logger.Info($"RebuildUiFromCurrentFilesAsync starting; root='{rootPath}', files={files.Count}, preferredSelection='{preferredSelectionPath ?? string.Empty}', status='{statusText}'");
 
         try
         {
@@ -668,12 +819,13 @@ public partial class MainWindow : Window
             SummaryTextBlock.Text = root.SizeText;
             UpdateDriveSummary(root.FullPath, root);
             ApplyDuplicateSnapshot(snapshot.Duplicates);
-            AppLogger.Info($"UI rebuilt from current file model; root='{root.FullPath}', files={root.FileCount}, bytes={root.SizeBytes}, preferredSelection='{preferredSelectionPath ?? string.Empty}', selected='{selectedNode.FullPath}', status='{statusText}'");
+            _logger.Info($"UI rebuilt from current file model; root='{root.FullPath}', files={root.FileCount}, bytes={root.SizeBytes}, preferredSelection='{preferredSelectionPath ?? string.Empty}', selected='{selectedNode.FullPath}', status='{statusText}'");
         }
         finally
         {
             ScanProgressBar.IsIndeterminate = false;
             _isUpdatingScanView = false;
+            _logger.Debug($"RebuildUiFromCurrentFilesAsync finished; root='{rootPath}', status='{statusText}'");
         }
     }
 
@@ -688,17 +840,17 @@ public partial class MainWindow : Window
 
         if (slice.Node is not DirectoryUsageNode node)
         {
-            AppLogger.Info($"Legend slice clicked without a folder target; label='{slice.Label}'");
+            _logger.Info($"Legend slice clicked without a folder target; label='{slice.Label}'");
             return;
         }
 
-        AppLogger.Info($"Legend slice clicked; label='{slice.Label}', targetPath='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
+        _logger.Info($"Legend slice clicked; label='{slice.Label}', targetPath='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
         SelectFolderFromPieSlice(node);
     }
 
     private void PieCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        AppLogger.Debug($"PieCanvas size changed; width={PieCanvas.ActualWidth:0.##}, height={PieCanvas.ActualHeight:0.##}, selectedNode='{_selectedNode?.FullPath ?? string.Empty}'");
+        _logger.Debug($"PieCanvas size changed; width={PieCanvas.ActualWidth:0.##}, height={PieCanvas.ActualHeight:0.##}, selectedNode='{_selectedNode?.FullPath ?? string.Empty}'");
         if (_selectedNode is not null)
         {
             RenderNode(_selectedNode);
@@ -707,7 +859,7 @@ public partial class MainWindow : Window
 
     private void RenderNode(DirectoryUsageNode node)
     {
-        AppLogger.Debug($"RenderNode starting; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, childCount={node.Children.Count}, directFileBytes={node.DirectFileSizeBytes}");
+        _logger.Debug($"RenderNode starting; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, childCount={node.Children.Count}, directFileBytes={node.DirectFileSizeBytes}");
         PieBackButton.Visibility = node.Parent is null ? Visibility.Collapsed : Visibility.Visible;
         PieBackButton.ToolTip = node.Parent is null ? null : $"Show {node.Parent.DisplayName}";
         SelectedNameTextBlock.Text = node.DisplayName;
@@ -719,37 +871,37 @@ public partial class MainWindow : Window
         var slices = BuildSlices(node).ToList();
         LegendItems.ItemsSource = slices;
         DrawPie(slices);
-        AppLogger.Debug($"RenderNode completed; name='{node.DisplayName}', slices={slices.Count}");
+        _logger.Debug($"RenderNode completed; name='{node.DisplayName}', slices={slices.Count}");
     }
 
     private void PieBackButton_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedNode?.Parent is not { } parent)
         {
-            AppLogger.Debug("Pie back button clicked without a parent node");
+            _logger.Debug("Pie back button clicked without a parent node");
             return;
         }
 
-        AppLogger.Info($"Pie back button clicked; current='{_selectedNode.FullPath}', parent='{parent.FullPath}'");
+        _logger.Info($"Pie back button clicked; current='{_selectedNode.FullPath}', parent='{parent.FullPath}'");
         SelectFolderFromPieSlice(parent);
     }
 
     private ScanViewSnapshot BuildScanViewSnapshot(string rootPath, IReadOnlyList<FileUsageItem> files)
     {
-        using var operation = AppLogger.TimedOperation($"BuildScanViewSnapshot; rootPath='{rootPath}'; fileCount={files.Count}");
+        using var operation = _logger.TimedOperation($"BuildScanViewSnapshot; rootPath='{rootPath}'; fileCount={files.Count}");
         var normalizedRoot = NormalizeDirectoryScope(rootPath);
         var existingFiles = SortFiles(files
             .Where(file => IsInsideRoot(file.FullPath, normalizedRoot) && System.IO.File.Exists(file.FullPath)))
             .ToList();
         var root = BuildRootFromFiles(normalizedRoot, existingFiles);
         var duplicates = BuildDuplicateSnapshot(existingFiles);
-        AppLogger.Info($"Scan view snapshot built; root='{root.FullPath}', files={existingFiles.Count}, bytes={root.SizeBytes}, duplicateGroups={duplicates.TotalGroups}");
+        _logger.Info($"Scan view snapshot built; root='{root.FullPath}', files={existingFiles.Count}, bytes={root.SizeBytes}, duplicateGroups={duplicates.TotalGroups}");
         return new ScanViewSnapshot(root, existingFiles, duplicates);
     }
 
     private void PopulateDetails(DirectoryUsageNode root, bool selectRoot = true)
     {
-        using var operation = AppLogger.TimedOperation($"PopulateDetails; root='{root.FullPath}'");
+        using var operation = _logger.TimedOperation($"PopulateDetails; root='{root.FullPath}'");
         _directoryDetails.Clear();
         foreach (var node in FlattenDirectories(root))
         {
@@ -757,7 +909,7 @@ public partial class MainWindow : Window
         }
 
         FolderDetailsSummaryTextBlock.Text = $"{_directoryDetails.Count:N0} folders";
-        AppLogger.Info($"Directory details populated; folderRows={_directoryDetails.Count}");
+        _logger.Info($"Directory details populated; folderRows={_directoryDetails.Count}");
         if (selectRoot)
         {
             SelectDirectoryDetailsNode(root);
@@ -766,7 +918,7 @@ public partial class MainWindow : Window
 
     private void PopulateDuplicates(IReadOnlyList<FileUsageItem> files)
     {
-        using var operation = AppLogger.TimedOperation($"PopulateDuplicates; fileCount={files.Count}");
+        using var operation = _logger.TimedOperation($"PopulateDuplicates; fileCount={files.Count}");
         ApplyDuplicateSnapshot(BuildDuplicateSnapshot(files));
     }
 
@@ -848,12 +1000,12 @@ public partial class MainWindow : Window
                 ? $"Top {snapshot.MaxGroups:N0} of {snapshot.TotalGroups:N0} groups · {DirectoryUsageNode.FormatBytes(snapshot.TotalWastedBytes)} wasted"
                 : $"{snapshot.TotalGroups:N0} group{(snapshot.TotalGroups == 1 ? string.Empty : "s")} · {DirectoryUsageNode.FormatBytes(snapshot.TotalWastedBytes)} wasted";
 
-        AppLogger.Info($"Duplicates populated; totalGroups={snapshot.TotalGroups}, shownGroups={Math.Min(snapshot.TotalGroups, snapshot.MaxGroups)}, totalWastedBytes={snapshot.TotalWastedBytes}");
+        _logger.Info($"Duplicates populated; totalGroups={snapshot.TotalGroups}, shownGroups={Math.Min(snapshot.TotalGroups, snapshot.MaxGroups)}, totalWastedBytes={snapshot.TotalWastedBytes}");
     }
 
     private void SelectDirectoryDetailsNode(DirectoryUsageNode node)
     {
-        AppLogger.Debug($"SelectDirectoryDetailsNode; path='{node.FullPath}', alreadySelected={DirectoryDetailsGrid.SelectedItem == node}");
+        _logger.Debug($"SelectDirectoryDetailsNode; path='{node.FullPath}', alreadySelected={DirectoryDetailsGrid.SelectedItem == node}");
         if (DirectoryDetailsGrid.SelectedItem == node)
         {
             UpdateVisibleFiles(node);
@@ -866,13 +1018,13 @@ public partial class MainWindow : Window
 
     private void UpdateVisibleFiles(DirectoryUsageNode node)
     {
-        using var operation = AppLogger.TimedOperation($"UpdateVisibleFiles; scope='{node.FullPath}'; nodeFiles={node.FileCount}", AppLogLevel.Debug);
+        using var operation = _logger.TimedOperation($"UpdateVisibleFiles; scope='{node.FullPath}'; nodeFiles={node.FileCount}", AppLogLevel.Debug);
         _fileDetails.Clear();
 
         if (_allFilesSorted.Count == 0)
         {
             FileDetailsSummaryTextBlock.Text = string.Empty;
-            AppLogger.Debug("UpdateVisibleFiles skipped because all-files cache is empty");
+            _logger.Debug("UpdateVisibleFiles skipped because all-files cache is empty");
             return;
         }
 
@@ -880,7 +1032,7 @@ public partial class MainWindow : Window
         var scopedFiles = _allFilesSorted
             .Where(file => file.FullPath.StartsWith(scopePath, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        AppLogger.Debug($"Scoped files resolved; scopePath='{scopePath}', scopedFileCount={scopedFiles.Count}");
+        _logger.Debug($"Scoped files resolved; scopePath='{scopePath}', scopedFileCount={scopedFiles.Count}");
 
         var fileGroups = scopedFiles
             .GroupBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
@@ -903,7 +1055,7 @@ public partial class MainWindow : Window
             .OrderByDescending(group => group.SizeBytes)
             .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        AppLogger.Debug($"File groups built; groupCount={fileGroups.Count}");
+        _logger.Debug($"File groups built; groupCount={fileGroups.Count}");
 
         foreach (var group in fileGroups)
         {
@@ -940,7 +1092,7 @@ public partial class MainWindow : Window
         FileDetailsSummaryTextBlock.Text = _fileDetails.Count >= MaxVisibleFileRows && node.FileCount > _fileDetails.Count
             ? $"Showing {_fileDetails.Count:N0} rows from {node.FileCount:N0} files"
             : $"{node.FileCount:N0} files";
-        AppLogger.Info($"File details populated; scope='{node.FullPath}', groupCount={fileGroups.Count}, visibleRows={_fileDetails.Count}, nodeFiles={node.FileCount}");
+        _logger.Info($"File details populated; scope='{node.FullPath}', groupCount={fileGroups.Count}, visibleRows={_fileDetails.Count}, nodeFiles={node.FileCount}");
     }
 
     private void LogUiProgress(ScanProgress progress)
@@ -949,7 +1101,7 @@ public partial class MainWindow : Window
         var filesDelta = progress.FilesProcessed - _lastUiProgressLoggedFiles;
         if (progress.FilesProcessed == 0 || filesDelta >= 10_000 || nowUtc - _lastUiProgressLogUtc >= TimeSpan.FromSeconds(2))
         {
-            AppLogger.Info($"UI scan progress; filesProcessed={progress.FilesProcessed}; totalResults={progress.TotalResults}; bytesProcessed={progress.BytesProcessed}; bytesText='{DirectoryUsageNode.FormatBytes(progress.BytesProcessed)}'");
+            _logger.Info($"UI scan progress; filesProcessed={progress.FilesProcessed}; totalResults={progress.TotalResults}; bytesProcessed={progress.BytesProcessed}; bytesText='{DirectoryUsageNode.FormatBytes(progress.BytesProcessed)}'");
             _lastUiProgressLoggedFiles = progress.FilesProcessed;
             _lastUiProgressLogUtc = nowUtc;
         }
@@ -969,9 +1121,9 @@ public partial class MainWindow : Window
         return maxDate;
     }
 
-    private static IEnumerable<DirectoryUsageNode> FlattenDirectories(DirectoryUsageNode root)
+    private IEnumerable<DirectoryUsageNode> FlattenDirectories(DirectoryUsageNode root)
     {
-        AppLogger.Debug($"FlattenDirectories starting; root='{root.FullPath}'");
+        _logger.Debug($"FlattenDirectories starting; root='{root.FullPath}'");
         var pendingNodes = new Stack<DirectoryUsageNode>();
         pendingNodes.Push(root);
 
@@ -987,9 +1139,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private static IEnumerable<PieSlice> BuildSlices(DirectoryUsageNode node)
+    private IEnumerable<PieSlice> BuildSlices(DirectoryUsageNode node)
     {
-        AppLogger.Debug($"BuildSlices starting; path='{node.FullPath}', sizeBytes={node.SizeBytes}, childCount={node.Children.Count}, directFileSizeBytes={node.DirectFileSizeBytes}");
+        _logger.Debug($"BuildSlices starting; path='{node.FullPath}', sizeBytes={node.SizeBytes}, childCount={node.Children.Count}, directFileSizeBytes={node.DirectFileSizeBytes}");
         if (node.SizeBytes <= 0)
         {
             yield break;
@@ -1028,19 +1180,19 @@ public partial class MainWindow : Window
 
     private void DrawPie(IReadOnlyList<PieSlice> slices)
     {
-        AppLogger.Debug($"DrawPie starting; slices={slices.Count}, canvasWidth={PieCanvas.ActualWidth:0.##}, canvasHeight={PieCanvas.ActualHeight:0.##}");
+        _logger.Debug($"DrawPie starting; slices={slices.Count}, canvasWidth={PieCanvas.ActualWidth:0.##}, canvasHeight={PieCanvas.ActualHeight:0.##}");
         PieCanvas.Children.Clear();
 
         var total = slices.Sum(slice => slice.SizeBytes);
         if (total <= 0 || PieCanvas.ActualWidth <= 1 || PieCanvas.ActualHeight <= 1)
         {
             EmptyPieTextBlock.Visibility = Visibility.Visible;
-            AppLogger.Debug($"DrawPie skipped; total={total}, canvasWidth={PieCanvas.ActualWidth:0.##}, canvasHeight={PieCanvas.ActualHeight:0.##}");
+            _logger.Debug($"DrawPie skipped; total={total}, canvasWidth={PieCanvas.ActualWidth:0.##}, canvasHeight={PieCanvas.ActualHeight:0.##}");
             return;
         }
 
         EmptyPieTextBlock.Visibility = Visibility.Collapsed;
-    var radius = Math.Max(24, Math.Min(PieCanvas.ActualWidth, PieCanvas.ActualHeight) * 0.45);
+        var radius = Math.Max(24, Math.Min(PieCanvas.ActualWidth, PieCanvas.ActualHeight) * 0.45);
         var center = new WpfPoint(PieCanvas.ActualWidth / 2, PieCanvas.ActualHeight / 2);
         var startAngle = -90d;
 
@@ -1080,7 +1232,7 @@ public partial class MainWindow : Window
             startAngle += sweepAngle;
         }
 
-        AppLogger.Debug($"DrawPie completed; totalBytes={total}, drawnChildren={PieCanvas.Children.Count}");
+        _logger.Debug($"DrawPie completed; totalBytes={total}, drawnChildren={PieCanvas.Children.Count}");
     }
 
     private void DrawPieSliceLabel(PieSlice slice, WpfPoint center, double radius, double startAngle, double sweepAngle)
@@ -1160,7 +1312,7 @@ public partial class MainWindow : Window
     {
         if (sender is not FrameworkElement { Tag: PieSlice { ExplorerNode: DirectoryUsageNode explorerNode } slice })
         {
-            AppLogger.Warning("Open in File Explorer clicked without a usable slice target");
+            _logger.Warning("Open in File Explorer clicked without a usable slice target");
             return;
         }
 
@@ -1174,7 +1326,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        AppLogger.Info($"Pie slice clicked; label='{slice.Label}', targetPath='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
+        _logger.Info($"Pie slice clicked; label='{slice.Label}', targetPath='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
         e.Handled = true;
 
         SelectFolderFromPieSlice(node);
@@ -1184,18 +1336,18 @@ public partial class MainWindow : Window
     {
         if (!ExpandAndSelectTreeNode(node))
         {
-            AppLogger.Warning($"Pie slice target could not be selected in TreeView; rendering node directly; targetPath='{node.FullPath}'");
+            _logger.Warning($"Pie slice target could not be selected in TreeView; rendering node directly; targetPath='{node.FullPath}'");
             _selectedNode = node;
             RenderNode(node);
             SelectDirectoryDetailsNode(node);
         }
     }
 
-    private static void OpenInFileExplorer(string folderPath, string source)
+    private void OpenInFileExplorer(string folderPath, string source)
     {
         try
         {
-            AppLogger.Info($"Opening folder in File Explorer; source={source}; folderPath='{folderPath}'");
+            _logger.Info($"Opening folder in File Explorer; source={source}; folderPath='{folderPath}'");
             Process.Start(new ProcessStartInfo
             {
                 FileName = "explorer.exe",
@@ -1205,19 +1357,19 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppLogger.Error($"Failed to open folder in File Explorer; source={source}; folderPath='{folderPath}'", ex);
+            _logger.Error($"Failed to open folder in File Explorer; source={source}; folderPath='{folderPath}'", ex);
             System.Windows.MessageBox.Show($"Could not open File Explorer for:\n{folderPath}", "Open in File Explorer failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
     private bool ExpandAndSelectTreeNode(DirectoryUsageNode node)
     {
-        using var operation = AppLogger.TimedOperation($"ExpandAndSelectTreeNode; target='{node.FullPath}'", AppLogLevel.Debug);
+        using var operation = _logger.TimedOperation($"ExpandAndSelectTreeNode; target='{node.FullPath}'", AppLogLevel.Debug);
 
         var path = BuildNodePath(node).ToList();
         if (path.Count == 0)
         {
-            AppLogger.Warning($"ExpandAndSelectTreeNode failed because node path was empty; target='{node.FullPath}'");
+            _logger.Warning($"ExpandAndSelectTreeNode failed because node path was empty; target='{node.FullPath}'");
             return false;
         }
 
@@ -1236,7 +1388,7 @@ public partial class MainWindow : Window
 
             if (item is null)
             {
-                AppLogger.Warning($"ExpandAndSelectTreeNode could not find TreeViewItem container; pathNode='{pathNode.FullPath}', target='{node.FullPath}'");
+                _logger.Warning($"ExpandAndSelectTreeNode could not find TreeViewItem container; pathNode='{pathNode.FullPath}', target='{node.FullPath}'");
                 return false;
             }
 
@@ -1248,14 +1400,14 @@ public partial class MainWindow : Window
 
         if (currentTreeViewItem is null)
         {
-            AppLogger.Warning($"ExpandAndSelectTreeNode reached end without a selected container; target='{node.FullPath}'");
+            _logger.Warning($"ExpandAndSelectTreeNode reached end without a selected container; target='{node.FullPath}'");
             return false;
         }
 
         currentTreeViewItem.IsSelected = true;
         currentTreeViewItem.BringIntoView();
         currentTreeViewItem.Focus();
-        AppLogger.Info($"Tree node selected from pie slice; target='{node.FullPath}', expandedPathDepth={path.Count}");
+        _logger.Info($"Tree node selected from pie slice; target='{node.FullPath}', expandedPathDepth={path.Count}");
         return true;
     }
 
@@ -1272,23 +1424,34 @@ public partial class MainWindow : Window
 
     private DirectoryUsageNode BuildRootFromFiles(string rootPath, IEnumerable<FileUsageItem> files)
     {
+        using var operation = _logger.TimedOperation($"BuildRootFromFiles; rootPath='{rootPath}'", AppLogLevel.Debug);
         var normalizedRoot = NormalizeDirectoryScope(rootPath);
         var root = new DirectoryUsageNode(GetRootDisplayName(normalizedRoot), normalizedRoot);
+        var fileCount = 0;
+        var skippedOutsideRoot = 0;
 
         foreach (var file in files)
         {
-            TryAddFileToNodeTree(root, normalizedRoot, file);
+            if (TryAddFileToNodeTree(root, normalizedRoot, file))
+            {
+                fileCount++;
+            }
+            else
+            {
+                skippedOutsideRoot++;
+            }
         }
 
         root.FinalizeStats(root.SizeBytes);
+        _logger.Info($"Root rebuilt from file model; root='{root.FullPath}', files={fileCount}, skippedOutsideRoot={skippedOutsideRoot}, bytes={root.SizeBytes}");
         return root;
     }
 
-    private static void TryAddFileToNodeTree(DirectoryUsageNode root, string normalizedRoot, FileUsageItem file)
+    private static bool TryAddFileToNodeTree(DirectoryUsageNode root, string normalizedRoot, FileUsageItem file)
     {
         if (!IsInsideRoot(file.FullPath, normalizedRoot))
         {
-            return;
+            return false;
         }
 
         root.AddAggregateFile(file.SizeBytes, file.LastModifiedUtc, file.LastAccessedUtc);
@@ -1306,6 +1469,7 @@ public partial class MainWindow : Window
         }
 
         current.AddDirectFile(file.SizeBytes);
+        return true;
     }
 
     private DirectoryUsageNode? FindDirectoryByPath(DirectoryUsageNode root, string? path)
@@ -1428,17 +1592,20 @@ public partial class MainWindow : Window
             : previousSelectionPath;
     }
 
-    private static async Task WaitForShellFileOperationAsync(string path, ShellItemKind itemKind, bool expectedExists)
+    private async Task WaitForShellFileOperationAsync(string path, ShellItemKind itemKind, bool expectedExists)
     {
         for (var attempt = 0; attempt < 8; attempt++)
         {
             if (PathExists(path, itemKind) == expectedExists)
             {
+                _logger.Debug($"Shell file operation observed; path='{path}', kind={itemKind}, expectedExists={expectedExists}, attempts={attempt + 1}");
                 return;
             }
 
             await Task.Delay(150);
         }
+
+        _logger.Warning($"Shell file operation wait timed out; path='{path}', kind={itemKind}, expectedExists={expectedExists}");
     }
 
     private static bool TryGetExistingShellItem(string path, ShellItemKind itemKind, out string existingPath)
@@ -1542,6 +1709,7 @@ public partial class MainWindow : Window
 
     private string? ShowRenameDialog(string currentName)
     {
+        _logger.Info($"Rename dialog opening; currentName='{currentName}'");
         var owner = this;
         var input = new System.Windows.Controls.TextBox
         {
@@ -1594,7 +1762,10 @@ public partial class MainWindow : Window
         };
         okButton.Click += (_, _) => dialog.DialogResult = true;
 
-        return dialog.ShowDialog() == true ? input.Text.Trim() : null;
+        var accepted = dialog.ShowDialog() == true;
+        var result = accepted ? input.Text.Trim() : null;
+        _logger.Info($"Rename dialog closed; accepted={accepted}; currentName='{currentName}'; newName='{result ?? string.Empty}'");
+        return result;
     }
 
     private static Geometry CreateSliceGeometry(WpfPoint center, double radius, double startAngle, double sweepAngle)
@@ -1622,17 +1793,17 @@ public partial class MainWindow : Window
 
     private void ExpandRootItem()
     {
-        AppLogger.Debug($"ExpandRootItem starting; rootCount={_treeRoots.Count}");
+        _logger.Debug($"ExpandRootItem starting; rootCount={_treeRoots.Count}");
         UsageTree.UpdateLayout();
         if (_treeRoots.Count > 0 && UsageTree.ItemContainerGenerator.ContainerFromItem(_treeRoots[0]) is TreeViewItem item)
         {
             item.IsExpanded = true;
             item.IsSelected = true;
-            AppLogger.Debug("ExpandRootItem completed; root expanded and selected");
+            _logger.Debug("ExpandRootItem completed; root expanded and selected");
         }
         else
         {
-            AppLogger.Warning("ExpandRootItem could not resolve root TreeViewItem");
+            _logger.Warning("ExpandRootItem could not resolve root TreeViewItem");
         }
     }
 
@@ -1640,12 +1811,12 @@ public partial class MainWindow : Window
     {
         try
         {
-            AppLogger.Debug($"UpdateDriveSummary starting; path='{path}', hasRoot={root is not null}");
+            _logger.Debug($"UpdateDriveSummary starting; path='{path}', hasRoot={root is not null}");
             var driveRoot = IoPath.GetPathRoot(IoPath.GetFullPath(path));
             if (driveRoot is null)
             {
                 DriveSummaryTextBlock.Text = string.Empty;
-                AppLogger.Warning($"UpdateDriveSummary could not resolve drive root; path='{path}'");
+                _logger.Warning($"UpdateDriveSummary could not resolve drive root; path='{path}'");
                 return;
             }
 
@@ -1653,19 +1824,19 @@ public partial class MainWindow : Window
             if (!drive.IsReady)
             {
                 DriveSummaryTextBlock.Text = driveRoot;
-                AppLogger.Warning($"UpdateDriveSummary drive not ready; driveRoot='{driveRoot}'");
+                _logger.Warning($"UpdateDriveSummary drive not ready; driveRoot='{driveRoot}'");
                 return;
             }
 
             var used = Math.Max(0, drive.TotalSize - drive.AvailableFreeSpace);
             var scanned = root is null ? string.Empty : $" | Scanned {root.SizeText}";
             DriveSummaryTextBlock.Text = $"{drive.Name} Total {DirectoryUsageNode.FormatBytes(drive.TotalSize)} | Used {DirectoryUsageNode.FormatBytes(used)} | Free {DirectoryUsageNode.FormatBytes(drive.AvailableFreeSpace)}{scanned}";
-            AppLogger.Info($"Drive summary updated; drive='{drive.Name}', totalBytes={drive.TotalSize}, usedBytes={used}, freeBytes={drive.AvailableFreeSpace}, scannedBytes={root?.SizeBytes ?? 0}");
+            _logger.Info($"Drive summary updated; drive='{drive.Name}', totalBytes={drive.TotalSize}, usedBytes={used}, freeBytes={drive.AvailableFreeSpace}, scannedBytes={root?.SizeBytes ?? 0}");
         }
         catch (Exception ex)
         {
             DriveSummaryTextBlock.Text = string.Empty;
-            AppLogger.Error($"UpdateDriveSummary failed; path='{path}'", ex);
+            _logger.Error($"UpdateDriveSummary failed; path='{path}'", ex);
         }
     }
 

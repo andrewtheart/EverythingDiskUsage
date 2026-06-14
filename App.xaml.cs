@@ -1,4 +1,5 @@
 ﻿using EverythingDiskUsage.Services;
+using Microsoft.Extensions.DependencyInjection;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -9,47 +10,74 @@ namespace EverythingDiskUsage;
 /// </summary>
 public partial class App : System.Windows.Application
 {
+	private ServiceProvider? _serviceProvider;
+	private IAppLogger? _logger;
+
 	protected override void OnStartup(StartupEventArgs e)
 	{
-		AppLogger.Info("Application startup requested");
-		AppLogger.Info($"CommandLine='{Environment.CommandLine}'");
-		AppLogger.Info($"LogFile='{AppLogger.LogFilePath}'");
+		_serviceProvider = ConfigureServices();
+		_logger = _serviceProvider.GetRequiredService<IAppLogger>();
+
+		_logger.Info("Application startup requested");
+		_logger.Debug("Service provider configured; resolving startup services");
+		_logger.Info($"CommandLine='{Environment.CommandLine}'");
+		_logger.Info($"StartupArgs='{string.Join(" ", e.Args)}'");
+		_logger.Info($"LogFile='{_logger.LogFilePath}'");
 
 		DispatcherUnhandledException += OnDispatcherUnhandledException;
 		AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
 		TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+		_logger.Debug("Unhandled exception handlers registered");
 
 		base.OnStartup(e);
-		AppLogger.Info("Application startup completed");
+
+		_logger.Debug("Resolving MainWindow from service provider");
+		MainWindow = _serviceProvider.GetRequiredService<MainWindow>();
+		_logger.Debug("Showing MainWindow");
+		MainWindow.Show();
+		_logger.Info("Application startup completed");
 	}
 
 	protected override void OnExit(ExitEventArgs e)
 	{
-		AppLogger.Info($"Application exit requested; exitCode={e.ApplicationExitCode}");
+		_logger?.Info($"Application exit requested; exitCode={e.ApplicationExitCode}");
 		base.OnExit(e);
-		AppLogger.Info("Application exit completed");
+		_logger?.Info("Application exit completed");
+		_logger?.Debug("Disposing service provider");
+		_serviceProvider?.Dispose();
 	}
 
-	private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+	private static ServiceProvider ConfigureServices()
 	{
-		AppLogger.Critical("Unhandled dispatcher exception", e.Exception);
+		var services = new ServiceCollection();
+		services.AddSingleton<IAppLogger, AppLoggerAdapter>();
+		services.AddSingleton<IAppSettingsService, AppSettingsServiceAdapter>();
+		services.AddSingleton<IDiskUsageAnalyzer, DiskUsageAnalyzer>();
+		services.AddSingleton<IShellContextMenuService, ShellContextMenuService>();
+		services.AddTransient<MainWindow>();
+		return services.BuildServiceProvider(validateScopes: true);
 	}
 
-	private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+	private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+	{
+		_logger?.Critical("Unhandled dispatcher exception", e.Exception);
+	}
+
+	private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
 	{
 		if (e.ExceptionObject is Exception exception)
 		{
-			AppLogger.Critical($"Unhandled AppDomain exception; isTerminating={e.IsTerminating}", exception);
+			_logger?.Critical($"Unhandled AppDomain exception; isTerminating={e.IsTerminating}", exception);
 		}
 		else
 		{
-			AppLogger.Critical($"Unhandled AppDomain exception object; isTerminating={e.IsTerminating}; object='{e.ExceptionObject}'");
+			_logger?.Critical($"Unhandled AppDomain exception object; isTerminating={e.IsTerminating}; object='{e.ExceptionObject}'");
 		}
 	}
 
-	private static void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+	private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
 	{
-		AppLogger.Error("Unobserved task exception", e.Exception);
+		_logger?.Error("Unobserved task exception", e.Exception);
 	}
 }
 

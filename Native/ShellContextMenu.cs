@@ -4,9 +4,9 @@ using System.Windows.Interop;
 
 namespace EverythingDiskUsage.Native;
 
-internal sealed record ShellContextMenuCommand(string Path, string Verb, string MenuText, uint CommandId);
+public sealed record ShellContextMenuCommand(string Path, string Verb, string MenuText, uint CommandId);
 
-internal sealed record ShellContextMenuResult(bool CommandSelected, string Verb, string MenuText, uint CommandId, bool ShellInvoked)
+public sealed record ShellContextMenuResult(bool CommandSelected, string Verb, string MenuText, uint CommandId, bool ShellInvoked)
 {
     public static ShellContextMenuResult None { get; } = new(false, string.Empty, string.Empty, 0, false);
 }

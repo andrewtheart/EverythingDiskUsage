@@ -17,31 +17,86 @@ public enum AppLogLevel
 
 public static class AppLogger
 {
-    private const int RetainedLogFiles = 20;
     private static readonly object SyncRoot = new();
+    private static AppSettings _settings = AppSettingsService.CreateDefault();
+    private static AppLogLevel _minimumLogLevel = AppLogLevel.Info;
+    private static bool _logToDebugOutput;
+    private static int _retainedLogFiles = 20;
 
     static AppLogger()
     {
+        ApplySettingsCore(AppSettingsService.Load());
         LogDirectory = ResolveLogDirectory();
         Directory.CreateDirectory(LogDirectory);
 
         var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
         LogFilePath = Path.Combine(LogDirectory, $"EverythingDiskUsage-{timestamp}-{Environment.ProcessId}.log");
-        LogEachSdkFile = IsEnabled("EVERYTHING_DISK_USAGE_LOG_EACH_FILE");
 
         TryDeleteOldLogs();
-        Info("Logger initialized");
-        Info($"ProcessId={Environment.ProcessId}; Machine='{Environment.MachineName}'; User='{Environment.UserName}'; OS='{Environment.OSVersion}'; 64BitProcess={Environment.Is64BitProcess}; Framework='{System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}'");
-        Info($"Executable='{Environment.ProcessPath ?? string.Empty}'; CurrentDirectory='{Environment.CurrentDirectory}'; BaseDirectory='{AppContext.BaseDirectory}'");
-        Info($"AssemblyVersion='{Assembly.GetExecutingAssembly().GetName().Version}'");
-        Info($"LogEachSdkFile={LogEachSdkFile}");
+        Write(AppLogLevel.Info, "Logger initialized", force: true);
+        Write(AppLogLevel.Info, $"ProcessId={Environment.ProcessId}; Machine='{Environment.MachineName}'; User='{Environment.UserName}'; OS='{Environment.OSVersion}'; 64BitProcess={Environment.Is64BitProcess}; Framework='{System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}'", force: true);
+        Write(AppLogLevel.Info, $"Executable='{Environment.ProcessPath ?? string.Empty}'; CurrentDirectory='{Environment.CurrentDirectory}'; BaseDirectory='{AppContext.BaseDirectory}'", force: true);
+        Write(AppLogLevel.Info, $"AssemblyVersion='{Assembly.GetExecutingAssembly().GetName().Version}'", force: true);
+        Write(AppLogLevel.Info, $"SettingsFile='{AppSettingsService.SettingsFilePath}'; LogDirectory='{LogDirectory}'; LogFile='{LogFilePath}'", force: true);
+        Write(AppLogLevel.Info, $"Logger settings: MinimumLogLevel={MinimumLogLevel}; LogEachSdkFile={LogEachSdkFile}; LogToDebugOutput={LogToDebugOutput}; RetainedLogFiles={RetainedLogFiles}", force: true);
     }
 
     public static string LogDirectory { get; }
 
     public static string LogFilePath { get; }
 
-    public static bool LogEachSdkFile { get; }
+    public static bool LogEachSdkFile { get; private set; }
+
+    public static AppLogLevel MinimumLogLevel
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return _minimumLogLevel;
+            }
+        }
+    }
+
+    public static bool LogToDebugOutput
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return _logToDebugOutput;
+            }
+        }
+    }
+
+    public static int RetainedLogFiles
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return _retainedLogFiles;
+            }
+        }
+    }
+
+    public static AppSettings CurrentSettings
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return _settings.Clone();
+            }
+        }
+    }
+
+    public static void ApplySettings(AppSettings settings, string source)
+    {
+        ApplySettingsCore(settings);
+        TryDeleteOldLogs();
+        Write(AppLogLevel.Info, $"Logger settings applied; source='{source}'; MinimumLogLevel={MinimumLogLevel}; LogEachSdkFile={LogEachSdkFile}; LogToDebugOutput={LogToDebugOutput}; RetainedLogFiles={RetainedLogFiles}; SettingsFile='{AppSettingsService.SettingsFilePath}'", force: true);
+    }
 
     public static void Trace(string message) => Write(AppLogLevel.Trace, message);
 
@@ -61,10 +116,23 @@ public static class AppLogger
         return new TimedLogScope(name, level);
     }
 
-    private static void Write(AppLogLevel level, string message, Exception? exception = null)
+    private static void Write(AppLogLevel level, string message, Exception? exception = null, bool force = false)
     {
         try
         {
+            AppLogLevel minimumLogLevel;
+            bool logToDebugOutput;
+            lock (SyncRoot)
+            {
+                minimumLogLevel = _minimumLogLevel;
+                logToDebugOutput = _logToDebugOutput;
+            }
+
+            if (!force && level < minimumLogLevel)
+            {
+                return;
+            }
+
             var builder = new StringBuilder();
             builder.Append(DateTimeOffset.Now.ToString("o"));
             builder.Append('\t');
@@ -84,6 +152,11 @@ public static class AppLogger
             lock (SyncRoot)
             {
                 File.AppendAllText(LogFilePath, builder.ToString() + Environment.NewLine, Encoding.UTF8);
+            }
+
+            if (logToDebugOutput)
+            {
+                System.Diagnostics.Trace.WriteLine(builder.ToString());
             }
         }
         catch
@@ -111,11 +184,17 @@ public static class AppLogger
     {
         try
         {
+            int retainedLogFiles;
+            lock (SyncRoot)
+            {
+                retainedLogFiles = _retainedLogFiles;
+            }
+
             var logFiles = Directory
                 .EnumerateFiles(LogDirectory, "EverythingDiskUsage-*.log")
                 .Select(path => new FileInfo(path))
                 .OrderByDescending(file => file.LastWriteTimeUtc)
-                .Skip(RetainedLogFiles)
+                .Skip(retainedLogFiles)
                 .ToList();
 
             foreach (var file in logFiles)
@@ -125,6 +204,19 @@ public static class AppLogger
         }
         catch
         {
+        }
+    }
+
+    private static void ApplySettingsCore(AppSettings settings)
+    {
+        var normalized = AppSettingsService.Normalize(settings);
+        lock (SyncRoot)
+        {
+            _settings = normalized.Clone();
+            _minimumLogLevel = normalized.MinimumLogLevel;
+            LogEachSdkFile = normalized.LogEachSdkFile || IsEnabled("EVERYTHING_DISK_USAGE_LOG_EACH_FILE");
+            _logToDebugOutput = normalized.LogToDebugOutput;
+            _retainedLogFiles = normalized.RetainedLogFiles;
         }
     }
 
