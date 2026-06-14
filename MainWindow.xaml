@@ -175,6 +175,7 @@
                               Grid.Row="1"
                               BorderThickness="0"
                               Background="Transparent"
+                              PreviewMouseRightButtonDown="UsageTree_PreviewMouseRightButtonDown"
                               SelectedItemChanged="UsageTree_SelectedItemChanged"
                               VirtualizingStackPanel.IsVirtualizing="True"
                               VirtualizingStackPanel.VirtualizationMode="Recycling" />
@@ -191,7 +192,24 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <StackPanel>
-                        <TextBlock x:Name="SelectedNameTextBlock" Text="No scan loaded" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" TextTrimming="CharacterEllipsis" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="PieBackButton"
+                                    Width="30"
+                                    Height="28"
+                                    Margin="0,0,8,0"
+                                    Padding="0"
+                                    Content="←"
+                                    FontSize="16"
+                                    FontWeight="SemiBold"
+                                    Visibility="Collapsed"
+                                    ToolTip="Show parent folder"
+                                    Click="PieBackButton_Click" />
+                            <TextBlock x:Name="SelectedNameTextBlock" Grid.Column="1" Text="No scan loaded" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        </Grid>
                         <TextBlock x:Name="SelectedPathTextBlock" Foreground="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,3,0,12" />
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -261,6 +279,7 @@
                                       SelectionUnit="FullRow"
                                       EnableRowVirtualization="True"
                                       EnableColumnVirtualization="True"
+                                      PreviewMouseRightButtonDown="DirectoryDetailsGrid_PreviewMouseRightButtonDown"
                                       SelectedItem="{Binding ElementName=UsageTree, Path=SelectedItem, Mode=OneWay}"
                                       SelectionChanged="DirectoryDetailsGrid_SelectionChanged">
                                 <DataGrid.Columns>
@@ -301,7 +320,8 @@
                                       SelectionMode="Extended"
                                       SelectionUnit="FullRow"
                                       EnableRowVirtualization="True"
-                                      EnableColumnVirtualization="True">
+                                      EnableColumnVirtualization="True"
+                                      PreviewMouseRightButtonDown="FileDetailsGrid_PreviewMouseRightButtonDown">
                                 <DataGrid.RowStyle>
                                     <Style TargetType="{x:Type DataGridRow}">
                                         <Style.Triggers>
@@ -319,6 +339,57 @@
                                     <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="100" />
                                     <DataGridTextColumn Header="Last Modified" Binding="{Binding LastModifiedText}" Width="130" />
                                     <DataGridTextColumn Header="Last Accessed" Binding="{Binding LastAccessedText}" Width="130" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Duplicates">
+                <Grid Margin="0,10,0,0">
+                    <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <DockPanel Margin="2,0,2,4">
+                                <TextBlock Text="Duplicate Files" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                                <TextBlock x:Name="DuplicatesSummaryTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" VerticalAlignment="Center" />
+                            </DockPanel>
+                            <TextBlock Grid.Row="1" Foreground="{StaticResource MutedText}" Margin="2,0,2,8" FontSize="12"
+                                       Text="Matched by identical file name and size  ·  Right-click any file row to open its shell menu" />
+                            <DataGrid x:Name="DuplicatesGrid"
+                                      Grid.Row="2"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      GridLinesVisibility="Horizontal"
+                                      HeadersVisibility="Column"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      PreviewMouseRightButtonDown="DuplicatesGrid_PreviewMouseRightButtonDown">
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                                <Setter Property="Background" Value="#E9EFF5" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="2*" />
+                                    <DataGridTextColumn Header="Location" Binding="{Binding PathText}" Width="3*" />
+                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="95" />
+                                    <DataGridTextColumn Header="Copies" Binding="{Binding CopyCountText}" Width="75" />
+                                    <DataGridTextColumn Header="Wasted" Binding="{Binding WastedText}" Width="100" />
                                 </DataGrid.Columns>
                             </DataGrid>
                         </Grid>

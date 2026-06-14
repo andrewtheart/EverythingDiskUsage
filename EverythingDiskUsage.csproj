@@ -9,11 +9,46 @@
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="Everything64.dll" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!--
+    BuildInstaller — runs automatically after every `dotnet publish`.
+    Requires Inno Setup 6 (https://jrsoftware.org/isdl.php).
+    Assumes Inno Setup was installed machine-wide.
+    Override the compiler path via: dotnet publish /p:IsccPath="C:\...\ISCC.exe"
+  -->
+  <Target Name="BuildInstaller" AfterTargets="Publish">
+    <PropertyGroup>
+      <!-- Locate ISCC.exe in the standard machine-wide install paths, then allow a custom override. -->
+      <_IsccPath Condition="'$(_IsccPath)' == '' And Exists('C:\Program Files (x86)\Inno Setup 6\ISCC.exe')">C:\Program Files (x86)\Inno Setup 6\ISCC.exe</_IsccPath>
+      <_IsccPath Condition="'$(_IsccPath)' == '' And Exists('C:\Program Files\Inno Setup 6\ISCC.exe')">C:\Program Files\Inno Setup 6\ISCC.exe</_IsccPath>
+      <!-- Allow the caller to supply a custom path: /p:IsccPath="..." -->
+      <_IsccPath Condition="'$(IsccPath)' != ''">$(IsccPath)</_IsccPath>
+      <!-- Output folder lives in the repo root, not in the temp publish dir. -->
+      <_InstallerOutputDir>$(MSBuildProjectDirectory)\installer-output</_InstallerOutputDir>
+      <_InstallerIss>$(MSBuildProjectDirectory)\installer\installer.iss</_InstallerIss>
+      <!-- Resolve PublishDir to an absolute path, then strip any trailing slash so Inno Setup Source globs resolve correctly. -->
+      <_PublishDirFull Condition="$([System.IO.Path]::IsPathRooted('$(PublishDir)'))">$(PublishDir)</_PublishDirFull>
+      <_PublishDirFull Condition="'$(_PublishDirFull)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\$(PublishDir)'))</_PublishDirFull>
+      <_PublishDirTrimmed>$(_PublishDirFull.TrimEnd('\').TrimEnd('/'))</_PublishDirTrimmed>
+      <_InstallerVersion>$(Version)</_InstallerVersion>
+      <_InstallerVersion Condition="'$(_InstallerVersion)' == ''">1.0.0</_InstallerVersion>
+    </PropertyGroup>
+
+    <Warning Text="Inno Setup compiler not found in the standard machine-wide install path; skipping installer build. Install with: winget install JRSoftware.InnoSetup --scope machine"
+             Condition="'$(_IsccPath)' == ''" />
+
+    <MakeDir Directories="$(_InstallerOutputDir)" Condition="'$(_IsccPath)' != ''" />
+
+    <Exec Command="&quot;$(_IsccPath)&quot; &quot;/DPublishDir=$(_PublishDirTrimmed)&quot; &quot;/DAppVersion=$(_InstallerVersion)&quot; &quot;/DOutputDir=$(_InstallerOutputDir)&quot; &quot;$(_InstallerIss)&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)\installer"
+          Condition="'$(_IsccPath)' != ''" />
+  </Target>
 
 </Project>

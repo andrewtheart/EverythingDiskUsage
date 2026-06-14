@@ -1,25 +1,68 @@
-# Build outputs
+# .NET build outputs
 bin/
 obj/
+[Bb]uild/
+[Bb]uilds/
 
-# User-specific files
+# Publish and release outputs
+artifacts/
+publish/
+**/publish/
+installer-output/
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+*.nuspec.user
+project.lock.json
+project.assets.json
+
+# Test and coverage outputs
+TestResults/
+coverage/
+coverage-*/
+*.coverage
+*.coveragexml
+*.trx
+*.cobertura.xml
+
+# Logs, diagnostics, and dumps
+*.log
+*.binlog
+*.dmp
+*.mdmp
+*.etl
+*.trace
+
+# User-specific IDE files
 *.user
+*.rsuser
 *.suo
 *.userosscache
 *.sln.docstates
 
-# Visual Studio / VS Code
+# Visual Studio / VS Code / Rider state
 .vs/
 .vscode/
+.idea/
+_ReSharper*/
+*.DotSettings.user
 
-# Logs
-*.log
-
-# NuGet
-*.nupkg
-*.snupkg
-packages/
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*~
 
 # OS files
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini

@@ -3,6 +3,7 @@ namespace EverythingDiskUsage.Models;
 public sealed record FileDetailRow(
     string Name,
     string PathText,
+    string? ShellItemPath,
     int FileCount,
     long SizeBytes,
     DateTime? LastModifiedUtc,
@@ -25,6 +26,7 @@ public sealed record FileDetailRow(
         return new FileDetailRow(
             file.Name,
             file.DirectoryPath,
+            file.FullPath,
             1,
             file.SizeBytes,
             file.LastModifiedUtc,
@@ -44,6 +46,7 @@ public sealed record FileDetailRow(
         return new FileDetailRow(
             name,
             pathText,
+            fileCount == 1 && pathText != "[multiple]" ? System.IO.Path.Combine(pathText, name) : null,
             fileCount,
             sizeBytes,
             fileCount > 1 ? null : lastModifiedUtc,

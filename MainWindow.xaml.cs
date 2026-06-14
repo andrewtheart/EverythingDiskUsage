@@ -1,4 +1,5 @@
 ﻿using EverythingDiskUsage.Models;
+using EverythingDiskUsage.Native;
 using EverythingDiskUsage.Services;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -6,6 +7,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Forms = System.Windows.Forms;
@@ -44,12 +46,34 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<DirectoryUsageNode> _treeRoots = [];
     private readonly ObservableCollection<DirectoryUsageNode> _directoryDetails = [];
     private readonly ObservableCollection<FileDetailRow> _fileDetails = [];
+    private readonly ObservableCollection<DuplicateFileRow> _duplicateRows = [];
     private readonly Forms.NotifyIcon _notifyIcon = new();
     private CancellationTokenSource? _scanCancellation;
     private DirectoryUsageNode? _selectedNode;
+    private DirectoryUsageNode? _currentRoot;
+    private string? _currentRootPath;
     private IReadOnlyList<FileUsageItem> _allFilesSorted = [];
+    private bool _isUpdatingScanView;
     private DateTime _lastUiProgressLogUtc = DateTime.MinValue;
     private long _lastUiProgressLoggedFiles;
+
+    private sealed record DuplicateRowsSnapshot(
+        IReadOnlyList<DuplicateFileRow> Rows,
+        int SourceFileCount,
+        int TotalGroups,
+        long TotalWastedBytes,
+        int MaxGroups);
+
+    private sealed record ScanViewSnapshot(
+        DirectoryUsageNode Root,
+        IReadOnlyList<FileUsageItem> Files,
+        DuplicateRowsSnapshot Duplicates);
+
+    private enum ShellItemKind
+    {
+        File,
+        Directory
+    }
 
     public MainWindow()
     {
@@ -58,6 +82,7 @@ public partial class MainWindow : Window
         UsageTree.ItemsSource = _treeRoots;
         DirectoryDetailsGrid.ItemsSource = _directoryDetails;
         FileDetailsGrid.ItemsSource = _fileDetails;
+        DuplicatesGrid.ItemsSource = _duplicateRows;
         ConfigureNotifications();
         AppLogger.Info("MainWindow constructor completed; item sources assigned");
     }
@@ -188,6 +213,9 @@ public partial class MainWindow : Window
         _fileDetails.Clear();
         _allFilesSorted = [];
         _selectedNode = null;
+        _currentRoot = null;
+        _currentRootPath = null;
+        _isUpdatingScanView = false;
         _lastUiProgressLogUtc = DateTime.MinValue;
         _lastUiProgressLoggedFiles = 0;
         LegendItems.ItemsSource = null;
@@ -195,6 +223,8 @@ public partial class MainWindow : Window
         EmptyPieTextBlock.Visibility = Visibility.Visible;
         FolderDetailsSummaryTextBlock.Text = string.Empty;
         FileDetailsSummaryTextBlock.Text = string.Empty;
+        _duplicateRows.Clear();
+        DuplicatesSummaryTextBlock.Text = string.Empty;
         AppLogger.Debug("Cleared previous scan UI state");
 
         var progress = new Progress<ScanProgress>(UpdateProgress);
@@ -204,6 +234,8 @@ public partial class MainWindow : Window
             AppLogger.Info($"Calling DiskUsageAnalyzer.ScanAsync; rootPath='{rootPath}'");
             var result = await _analyzer.ScanAsync(rootPath, progress, _scanCancellation.Token);
             AppLogger.Info($"ScanAsync completed; totalResults={result.TotalResults}; files={result.Root.FileCount}; bytes={result.Root.SizeBytes}; elapsedMs={result.Elapsed.TotalMilliseconds:0}");
+            _currentRoot = result.Root;
+            _currentRootPath = result.Root.FullPath;
             _treeRoots.Add(result.Root);
 
             using (AppLogger.TimedOperation($"Sort file details; fileCount={result.Files.Count}"))
@@ -217,6 +249,7 @@ public partial class MainWindow : Window
 
             _selectedNode = result.Root;
             PopulateDetails(result.Root);
+            PopulateDuplicates(_allFilesSorted);
             RenderNode(result.Root);
             StatusTextBlock.Text = $"Scan complete: {result.Root.FileCount:N0} files in {result.Elapsed.TotalSeconds:0.0}s";
             SummaryTextBlock.Text = result.Root.SizeText;
@@ -348,6 +381,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void UsageTree_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindVisualAncestor<TreeViewItem>(e.OriginalSource as DependencyObject) is not { } treeItem || treeItem.DataContext is not DirectoryUsageNode node)
+        {
+            return;
+        }
+
+        treeItem.IsSelected = true;
+        treeItem.Focus();
+        e.Handled = true;
+        await ShowShellContextMenuAsync(node.FullPath, ShellItemKind.Directory, e.GetPosition(this), "tree");
+    }
+
     private void DirectoryDetailsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (DirectoryDetailsGrid.SelectedItem is DirectoryUsageNode node)
@@ -356,6 +402,278 @@ public partial class MainWindow : Window
             _selectedNode = node;
             RenderNode(node);
             UpdateVisibleFiles(node);
+        }
+    }
+
+    private async void DirectoryDetailsGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindVisualAncestor<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row || row.Item is not DirectoryUsageNode node)
+        {
+            return;
+        }
+
+        DirectoryDetailsGrid.SelectedItem = node;
+        row.Focus();
+        e.Handled = true;
+        await ShowShellContextMenuAsync(node.FullPath, ShellItemKind.Directory, e.GetPosition(this), "folder details");
+    }
+
+    private async void FileDetailsGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindVisualAncestor<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row || row.Item is not FileDetailRow { ShellItemPath: { Length: > 0 } shellItemPath } fileRow)
+        {
+            return;
+        }
+
+        FileDetailsGrid.SelectedItem = fileRow;
+        row.Focus();
+        e.Handled = true;
+        await ShowShellContextMenuAsync(shellItemPath, ShellItemKind.File, e.GetPosition(this), "file details");
+    }
+
+    private async void DuplicatesGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindVisualAncestor<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row ||
+            row.Item is not DuplicateFileRow { ShellItemPath: { Length: > 0 } shellItemPath } fileRow)
+        {
+            return;
+        }
+
+        DuplicatesGrid.SelectedItem = fileRow;
+        row.Focus();
+        e.Handled = true;
+        await ShowShellContextMenuAsync(shellItemPath, ShellItemKind.File, e.GetPosition(this), "duplicates");
+    }
+
+    private async Task ShowShellContextMenuAsync(string path, ShellItemKind itemKind, WpfPoint localPoint, string source)
+    {
+        if (_scanCancellation is not null)
+        {
+            AppLogger.Warning($"Shell context menu skipped during active scan; source='{source}', path='{path}'");
+            return;
+        }
+
+        if (_isUpdatingScanView)
+        {
+            AppLogger.Warning($"Shell context menu skipped while scan view is updating; source='{source}', path='{path}'");
+            return;
+        }
+
+        if (!TryGetExistingShellItem(path, itemKind, out var shellPath))
+        {
+            AppLogger.Warning($"Shell context menu target no longer exists; source='{source}', path='{path}'");
+            System.Windows.MessageBox.Show(this, "That item no longer exists. Refreshing the current scan view.", "Item not found", MessageBoxButton.OK, MessageBoxImage.Information);
+            await RebuildUiFromCurrentFilesAsync(_selectedNode?.FullPath, "Removed stale item from view");
+            return;
+        }
+
+        try
+        {
+            var screenPoint = PointToScreen(localPoint);
+            var windowHandle = new WindowInteropHelper(this).Handle;
+            AppLogger.Info($"Showing shell context menu; source='{source}', kind={itemKind}, path='{shellPath}', x={screenPoint.X:0}, y={screenPoint.Y:0}");
+            var result = ShellContextMenu.Show(
+                windowHandle,
+                shellPath,
+                (int)Math.Round(screenPoint.X),
+                (int)Math.Round(screenPoint.Y),
+                command => !IsRenameCommand(command.Verb, command.MenuText));
+
+            if (!result.CommandSelected)
+            {
+                AppLogger.Debug($"Shell context menu dismissed without command; source='{source}', path='{shellPath}'");
+                return;
+            }
+
+            AppLogger.Info($"Shell context menu command selected; source='{source}', path='{shellPath}', verb='{result.Verb}', menuText='{result.MenuText}', shellInvoked={result.ShellInvoked}");
+
+            if (IsRenameCommand(result.Verb, result.MenuText))
+            {
+                await RenameShellItemAsync(shellPath, itemKind);
+                return;
+            }
+
+            if (IsDeleteCommand(result.Verb, result.MenuText))
+            {
+                await RefreshAfterDeleteCommandAsync(shellPath, itemKind);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Shell context menu failed; source='{source}', path='{path}'", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "Shell menu failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task RefreshAfterDeleteCommandAsync(string deletedPath, ShellItemKind itemKind)
+    {
+        var previousSelectionPath = _selectedNode?.FullPath;
+        await WaitForShellFileOperationAsync(deletedPath, itemKind, expectedExists: false);
+
+        if (PathExists(deletedPath, itemKind))
+        {
+            AppLogger.Info($"Delete command completed but target still exists; no UI change applied; path='{deletedPath}', kind={itemKind}");
+            return;
+        }
+
+        var beforeCount = _allFilesSorted.Count;
+        _allFilesSorted = SortFiles(_allFilesSorted
+            .Where(file => !IsFileWithinShellItem(file.FullPath, deletedPath, itemKind)))
+            .ToList();
+
+        var removedCount = beforeCount - _allFilesSorted.Count;
+        AppLogger.Info($"Delete reflected in scan model; path='{deletedPath}', kind={itemKind}, removedFiles={removedCount}");
+        await RebuildUiFromCurrentFilesAsync(ChooseSelectionAfterDelete(previousSelectionPath, deletedPath, itemKind), $"Deleted {removedCount:N0} indexed file{(removedCount == 1 ? string.Empty : "s")}");
+    }
+
+    private async Task RenameShellItemAsync(string oldPath, ShellItemKind itemKind)
+    {
+        var previousSelectionPath = _selectedNode?.FullPath;
+        var normalizedOldPath = NormalizeShellItemPath(oldPath, itemKind);
+        var oldName = GetShellItemName(normalizedOldPath, itemKind);
+        if (string.IsNullOrWhiteSpace(oldName))
+        {
+            AppLogger.Warning($"Rename skipped because target name could not be resolved; path='{oldPath}', kind={itemKind}");
+            return;
+        }
+
+        var newName = ShowRenameDialog(oldName);
+        if (string.IsNullOrWhiteSpace(newName) || newName.Equals(oldName, StringComparison.Ordinal))
+        {
+            AppLogger.Info($"Rename cancelled or unchanged; path='{oldPath}', kind={itemKind}");
+            return;
+        }
+
+        if (newName.IndexOfAny(IoPath.GetInvalidFileNameChars()) >= 0)
+        {
+            System.Windows.MessageBox.Show(this, "The new name contains characters Windows does not allow in file or folder names.", "Rename failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var parentPath = GetShellItemParentPath(normalizedOldPath, itemKind);
+        if (string.IsNullOrWhiteSpace(parentPath))
+        {
+            AppLogger.Warning($"Rename skipped because target parent could not be resolved; path='{oldPath}', kind={itemKind}");
+            return;
+        }
+
+        var newPath = IoPath.Combine(parentPath, newName);
+        if (PathExists(newPath, itemKind))
+        {
+            System.Windows.MessageBox.Show(this, "An item with that name already exists in this folder.", "Rename failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            AppLogger.Info($"Renaming shell item; oldPath='{normalizedOldPath}', newPath='{newPath}', kind={itemKind}");
+            if (itemKind == ShellItemKind.Directory)
+            {
+                Directory.Move(normalizedOldPath, newPath);
+            }
+            else
+            {
+                System.IO.File.Move(normalizedOldPath, newPath);
+            }
+
+            await WaitForShellFileOperationAsync(newPath, itemKind, expectedExists: true);
+            await ApplyRenameToCurrentScanAsync(normalizedOldPath, newPath, itemKind, previousSelectionPath);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Rename failed; oldPath='{normalizedOldPath}', newPath='{newPath}', kind={itemKind}", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "Rename failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task ApplyRenameToCurrentScanAsync(string oldPath, string newPath, ShellItemKind itemKind, string? previousSelectionPath)
+    {
+        if (_currentRootPath is null)
+        {
+            AppLogger.Warning($"Rename model refresh skipped because there is no current root; oldPath='{oldPath}', newPath='{newPath}', kind={itemKind}");
+            return;
+        }
+
+        var normalizedOldPath = NormalizeShellItemPath(oldPath, itemKind);
+        var normalizedNewPath = NormalizeShellItemPath(newPath, itemKind);
+        var updatedFiles = new List<FileUsageItem>(_allFilesSorted.Count);
+        var changedFileCount = 0;
+
+        foreach (var file in _allFilesSorted)
+        {
+            if (!TryMapRenamedFile(file, normalizedOldPath, normalizedNewPath, itemKind, out var updatedFile))
+            {
+                updatedFiles.Add(file);
+                continue;
+            }
+
+            updatedFiles.Add(updatedFile);
+            changedFileCount++;
+        }
+
+        if (itemKind == ShellItemKind.Directory && IsSameDirectory(_currentRootPath, normalizedOldPath))
+        {
+            _currentRootPath = NormalizeDirectoryScope(normalizedNewPath);
+            RootPathTextBox.Text = _currentRootPath;
+            AppLogger.Info($"Current root path updated after root folder rename; newRoot='{_currentRootPath}'");
+        }
+
+        _allFilesSorted = SortFiles(updatedFiles).ToList();
+        var selectionPath = TransformDirectoryPathAfterRename(previousSelectionPath, normalizedOldPath, normalizedNewPath, itemKind);
+        AppLogger.Info($"Rename reflected in scan model; oldPath='{normalizedOldPath}', newPath='{normalizedNewPath}', kind={itemKind}, changedFiles={changedFileCount}");
+        await RebuildUiFromCurrentFilesAsync(selectionPath, $"Renamed {GetShellItemName(normalizedNewPath, itemKind)}");
+    }
+
+    private async Task RebuildUiFromCurrentFilesAsync(string? preferredSelectionPath, string statusText)
+    {
+        if (_currentRootPath is null)
+        {
+            return;
+        }
+
+        if (_isUpdatingScanView)
+        {
+            AppLogger.Warning($"RebuildUiFromCurrentFilesAsync skipped because another update is already running; preferredSelection='{preferredSelectionPath ?? string.Empty}', status='{statusText}'");
+            return;
+        }
+
+        var rootPath = _currentRootPath;
+        var files = _allFilesSorted.ToList();
+        _isUpdatingScanView = true;
+        ScanProgressBar.IsIndeterminate = true;
+        StatusTextBlock.Text = "Updating scan view";
+
+        try
+        {
+            var snapshot = await Task.Run(() => BuildScanViewSnapshot(rootPath, files));
+            var root = snapshot.Root;
+            _currentRoot = root;
+            _allFilesSorted = snapshot.Files;
+
+            _treeRoots.Clear();
+            _treeRoots.Add(root);
+            PopulateDetails(root, selectRoot: false);
+
+            var selectedNode = FindDirectoryByPath(root, preferredSelectionPath) ?? FindNearestExistingParentNode(root, preferredSelectionPath) ?? root;
+            _selectedNode = selectedNode;
+            RenderNode(selectedNode);
+            SelectDirectoryDetailsNode(selectedNode);
+
+            if (!ExpandAndSelectTreeNode(selectedNode))
+            {
+                ExpandRootItem();
+            }
+
+            StatusTextBlock.Text = statusText;
+            SummaryTextBlock.Text = root.SizeText;
+            UpdateDriveSummary(root.FullPath, root);
+            ApplyDuplicateSnapshot(snapshot.Duplicates);
+            AppLogger.Info($"UI rebuilt from current file model; root='{root.FullPath}', files={root.FileCount}, bytes={root.SizeBytes}, preferredSelection='{preferredSelectionPath ?? string.Empty}', selected='{selectedNode.FullPath}', status='{statusText}'");
+        }
+        finally
+        {
+            ScanProgressBar.IsIndeterminate = false;
+            _isUpdatingScanView = false;
         }
     }
 
@@ -390,6 +708,8 @@ public partial class MainWindow : Window
     private void RenderNode(DirectoryUsageNode node)
     {
         AppLogger.Debug($"RenderNode starting; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, childCount={node.Children.Count}, directFileBytes={node.DirectFileSizeBytes}");
+        PieBackButton.Visibility = node.Parent is null ? Visibility.Collapsed : Visibility.Visible;
+        PieBackButton.ToolTip = node.Parent is null ? null : $"Show {node.Parent.DisplayName}";
         SelectedNameTextBlock.Text = node.DisplayName;
         SelectedPathTextBlock.Text = node.FullPath;
         SelectedSizeTextBlock.Text = node.SizeText;
@@ -402,7 +722,32 @@ public partial class MainWindow : Window
         AppLogger.Debug($"RenderNode completed; name='{node.DisplayName}', slices={slices.Count}");
     }
 
-    private void PopulateDetails(DirectoryUsageNode root)
+    private void PieBackButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedNode?.Parent is not { } parent)
+        {
+            AppLogger.Debug("Pie back button clicked without a parent node");
+            return;
+        }
+
+        AppLogger.Info($"Pie back button clicked; current='{_selectedNode.FullPath}', parent='{parent.FullPath}'");
+        SelectFolderFromPieSlice(parent);
+    }
+
+    private ScanViewSnapshot BuildScanViewSnapshot(string rootPath, IReadOnlyList<FileUsageItem> files)
+    {
+        using var operation = AppLogger.TimedOperation($"BuildScanViewSnapshot; rootPath='{rootPath}'; fileCount={files.Count}");
+        var normalizedRoot = NormalizeDirectoryScope(rootPath);
+        var existingFiles = SortFiles(files
+            .Where(file => IsInsideRoot(file.FullPath, normalizedRoot) && System.IO.File.Exists(file.FullPath)))
+            .ToList();
+        var root = BuildRootFromFiles(normalizedRoot, existingFiles);
+        var duplicates = BuildDuplicateSnapshot(existingFiles);
+        AppLogger.Info($"Scan view snapshot built; root='{root.FullPath}', files={existingFiles.Count}, bytes={root.SizeBytes}, duplicateGroups={duplicates.TotalGroups}");
+        return new ScanViewSnapshot(root, existingFiles, duplicates);
+    }
+
+    private void PopulateDetails(DirectoryUsageNode root, bool selectRoot = true)
     {
         using var operation = AppLogger.TimedOperation($"PopulateDetails; root='{root.FullPath}'");
         _directoryDetails.Clear();
@@ -413,7 +758,97 @@ public partial class MainWindow : Window
 
         FolderDetailsSummaryTextBlock.Text = $"{_directoryDetails.Count:N0} folders";
         AppLogger.Info($"Directory details populated; folderRows={_directoryDetails.Count}");
-        SelectDirectoryDetailsNode(root);
+        if (selectRoot)
+        {
+            SelectDirectoryDetailsNode(root);
+        }
+    }
+
+    private void PopulateDuplicates(IReadOnlyList<FileUsageItem> files)
+    {
+        using var operation = AppLogger.TimedOperation($"PopulateDuplicates; fileCount={files.Count}");
+        ApplyDuplicateSnapshot(BuildDuplicateSnapshot(files));
+    }
+
+    private static DuplicateRowsSnapshot BuildDuplicateSnapshot(IReadOnlyList<FileUsageItem> files)
+    {
+        const int MaxGroups = 500;
+        var rows = new List<DuplicateFileRow>();
+        if (files.Count == 0)
+        {
+            return new DuplicateRowsSnapshot(rows, files.Count, TotalGroups: 0, TotalWastedBytes: 0L, MaxGroups);
+        }
+
+        var allGroups = files
+            .Where(f => f.SizeBytes > 0)
+            .GroupBy(f => (Name: f.Name.ToLowerInvariant(), f.SizeBytes))
+            .Where(g => g.Count() >= 2)
+            .Select(g =>
+            {
+                var groupFiles = g.OrderBy(f => f.FullPath, StringComparer.OrdinalIgnoreCase).ToList();
+                return new
+                {
+                    Name = groupFiles[0].Name,
+                    g.Key.SizeBytes,
+                    Files = groupFiles,
+                    WastedBytes = (long)(groupFiles.Count - 1) * g.Key.SizeBytes
+                };
+            })
+            .OrderByDescending(g => g.WastedBytes)
+            .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var totalGroups = allGroups.Count;
+        var totalWasted = allGroups.Sum(g => g.WastedBytes);
+
+        foreach (var group in allGroups.Take(MaxGroups))
+        {
+            rows.Add(new DuplicateFileRow(
+                group.Name,
+                $"{group.Files.Count} copies",
+                ShellItemPath: null,
+                group.Files.Count,
+                group.SizeBytes,
+                group.WastedBytes,
+                IsGroup: true));
+
+            foreach (var file in group.Files)
+            {
+                rows.Add(new DuplicateFileRow(
+                    file.Name,
+                    file.DirectoryPath,
+                    file.FullPath,
+                    CopyCount: 1,
+                    file.SizeBytes,
+                    WastedBytes: 0L,
+                    IsGroup: false));
+            }
+        }
+
+        return new DuplicateRowsSnapshot(rows, files.Count, totalGroups, totalWasted, MaxGroups);
+    }
+
+    private void ApplyDuplicateSnapshot(DuplicateRowsSnapshot snapshot)
+    {
+        _duplicateRows.Clear();
+        foreach (var row in snapshot.Rows)
+        {
+            _duplicateRows.Add(row);
+        }
+
+        if (snapshot.SourceFileCount == 0)
+        {
+            DuplicatesSummaryTextBlock.Text = string.Empty;
+            return;
+        }
+
+        DuplicatesSummaryTextBlock.Text = snapshot.TotalGroups == 0
+            ? "No duplicates found"
+            : snapshot.TotalGroups > snapshot.MaxGroups
+                ? $"Top {snapshot.MaxGroups:N0} of {snapshot.TotalGroups:N0} groups · {DirectoryUsageNode.FormatBytes(snapshot.TotalWastedBytes)} wasted"
+                : $"{snapshot.TotalGroups:N0} group{(snapshot.TotalGroups == 1 ? string.Empty : "s")} · {DirectoryUsageNode.FormatBytes(snapshot.TotalWastedBytes)} wasted";
+
+        AppLogger.Info($"Duplicates populated; totalGroups={snapshot.TotalGroups}, shownGroups={Math.Min(snapshot.TotalGroups, snapshot.MaxGroups)}, totalWastedBytes={snapshot.TotalWastedBytes}");
     }
 
     private void SelectDirectoryDetailsNode(DirectoryUsageNode node)
@@ -833,6 +1268,333 @@ public partial class MainWindow : Window
         }
 
         return path;
+    }
+
+    private DirectoryUsageNode BuildRootFromFiles(string rootPath, IEnumerable<FileUsageItem> files)
+    {
+        var normalizedRoot = NormalizeDirectoryScope(rootPath);
+        var root = new DirectoryUsageNode(GetRootDisplayName(normalizedRoot), normalizedRoot);
+
+        foreach (var file in files)
+        {
+            TryAddFileToNodeTree(root, normalizedRoot, file);
+        }
+
+        root.FinalizeStats(root.SizeBytes);
+        return root;
+    }
+
+    private static void TryAddFileToNodeTree(DirectoryUsageNode root, string normalizedRoot, FileUsageItem file)
+    {
+        if (!IsInsideRoot(file.FullPath, normalizedRoot))
+        {
+            return;
+        }
+
+        root.AddAggregateFile(file.SizeBytes, file.LastModifiedUtc, file.LastAccessedUtc);
+
+        var relativeDirectory = IoPath.GetRelativePath(normalizedRoot, file.DirectoryPath);
+        var current = root;
+        if (!string.IsNullOrWhiteSpace(relativeDirectory) && relativeDirectory != ".")
+        {
+            foreach (var part in relativeDirectory.Split([IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+            {
+                var childPath = IoPath.Combine(current.FullPath, part);
+                current = current.GetOrAddChild(part, childPath);
+                current.AddAggregateFile(file.SizeBytes, file.LastModifiedUtc, file.LastAccessedUtc);
+            }
+        }
+
+        current.AddDirectFile(file.SizeBytes);
+    }
+
+    private DirectoryUsageNode? FindDirectoryByPath(DirectoryUsageNode root, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        return FlattenDirectories(root).FirstOrDefault(node => IsSameDirectory(node.FullPath, path));
+    }
+
+    private DirectoryUsageNode? FindNearestExistingParentNode(DirectoryUsageNode root, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var current = path;
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            var node = FindDirectoryByPath(root, current);
+            if (node is not null)
+            {
+                return node;
+            }
+
+            var trimmed = current.TrimEnd(IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar);
+            var parent = Directory.GetParent(trimmed);
+            if (parent is null)
+            {
+                return null;
+            }
+
+            current = parent.FullName;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<FileUsageItem> SortFiles(IEnumerable<FileUsageItem> files)
+    {
+        return files
+            .OrderByDescending(file => file.SizeBytes)
+            .ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(file => file.FullPath, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool TryMapRenamedFile(FileUsageItem file, string oldPath, string newPath, ShellItemKind itemKind, out FileUsageItem updatedFile)
+    {
+        if (!IsFileWithinShellItem(file.FullPath, oldPath, itemKind))
+        {
+            updatedFile = file;
+            return false;
+        }
+
+        var trimmedOldPath = itemKind == ShellItemKind.Directory ? TrimDirectoryPath(oldPath) : oldPath;
+        var trimmedNewPath = itemKind == ShellItemKind.Directory ? TrimDirectoryPath(newPath) : newPath;
+        var newFullPath = itemKind == ShellItemKind.Directory
+            ? trimmedNewPath + file.FullPath[trimmedOldPath.Length..]
+            : newPath;
+        var directoryPath = IoPath.GetDirectoryName(newFullPath) ?? string.Empty;
+        updatedFile = file with
+        {
+            Name = IoPath.GetFileName(newFullPath),
+            FullPath = newFullPath,
+            DirectoryPath = directoryPath
+        };
+        return true;
+    }
+
+    private static bool IsFileWithinShellItem(string filePath, string shellItemPath, ShellItemKind itemKind)
+    {
+        if (itemKind == ShellItemKind.File)
+        {
+            return string.Equals(IoPath.GetFullPath(filePath), IoPath.GetFullPath(shellItemPath), StringComparison.OrdinalIgnoreCase);
+        }
+
+        return IsInsideRoot(filePath, NormalizeDirectoryScope(shellItemPath));
+    }
+
+    private static string? TransformDirectoryPathAfterRename(string? path, string oldPath, string newPath, ShellItemKind itemKind)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return path;
+        }
+
+        if (itemKind == ShellItemKind.File)
+        {
+            return path;
+        }
+
+        var oldScope = NormalizeDirectoryScope(oldPath);
+        if (!IsInsideRoot(path, oldScope) && !IsSameDirectory(path, oldPath))
+        {
+            return path;
+        }
+
+        var trimmedOld = TrimDirectoryPath(oldPath);
+        var trimmedNew = TrimDirectoryPath(newPath);
+        return trimmedNew + TrimDirectoryPath(path)[trimmedOld.Length..];
+    }
+
+    private static string? ChooseSelectionAfterDelete(string? previousSelectionPath, string deletedPath, ShellItemKind itemKind)
+    {
+        if (string.IsNullOrWhiteSpace(previousSelectionPath))
+        {
+            return null;
+        }
+
+        if (itemKind == ShellItemKind.File)
+        {
+            return previousSelectionPath;
+        }
+
+        return IsInsideRoot(previousSelectionPath, NormalizeDirectoryScope(deletedPath)) || IsSameDirectory(previousSelectionPath, deletedPath)
+            ? Directory.GetParent(TrimDirectoryPath(deletedPath))?.FullName
+            : previousSelectionPath;
+    }
+
+    private static async Task WaitForShellFileOperationAsync(string path, ShellItemKind itemKind, bool expectedExists)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            if (PathExists(path, itemKind) == expectedExists)
+            {
+                return;
+            }
+
+            await Task.Delay(150);
+        }
+    }
+
+    private static bool TryGetExistingShellItem(string path, ShellItemKind itemKind, out string existingPath)
+    {
+        existingPath = NormalizeShellItemPath(path, itemKind);
+
+        return PathExists(existingPath, itemKind);
+    }
+
+    private static bool PathExists(string path, ShellItemKind itemKind)
+    {
+        return itemKind == ShellItemKind.Directory ? Directory.Exists(path) : System.IO.File.Exists(path);
+    }
+
+    private static string NormalizeShellItemPath(string path, ShellItemKind itemKind)
+    {
+        var fullPath = IoPath.GetFullPath(path);
+        return itemKind == ShellItemKind.Directory
+            ? TrimDirectoryPath(fullPath)
+            : fullPath;
+    }
+
+    private static string GetShellItemName(string path, ShellItemKind itemKind)
+    {
+        var normalized = NormalizeShellItemPath(path, itemKind);
+        return itemKind == ShellItemKind.Directory && IsDriveRoot(normalized)
+            ? normalized
+            : IoPath.GetFileName(normalized);
+    }
+
+    private static string? GetShellItemParentPath(string path, ShellItemKind itemKind)
+    {
+        var normalized = NormalizeShellItemPath(path, itemKind);
+        return itemKind == ShellItemKind.Directory
+            ? Directory.GetParent(normalized)?.FullName
+            : IoPath.GetDirectoryName(normalized);
+    }
+
+    private static bool IsDeleteCommand(string verb, string menuText)
+    {
+        return verb.Equals("delete", StringComparison.OrdinalIgnoreCase)
+            || menuText.Replace("&", string.Empty, StringComparison.Ordinal).Contains("delete", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRenameCommand(string verb, string menuText)
+    {
+        return verb.Equals("rename", StringComparison.OrdinalIgnoreCase)
+            || menuText.Replace("&", string.Empty, StringComparison.Ordinal).Contains("rename", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSameDirectory(string left, string right)
+    {
+        var normalizedLeft = TrimDirectoryPath(left);
+        var normalizedRight = TrimDirectoryPath(right);
+        return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string TrimDirectoryPath(string path)
+    {
+        var fullPath = IoPath.GetFullPath(path);
+        var root = IoPath.GetPathRoot(fullPath);
+        if (!string.IsNullOrWhiteSpace(root) && string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase))
+        {
+            return fullPath;
+        }
+
+        return fullPath.TrimEnd(IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar);
+    }
+
+    private static bool IsDriveRoot(string path)
+    {
+        var root = IoPath.GetPathRoot(path);
+        return !string.IsNullOrWhiteSpace(root) && string.Equals(IoPath.GetFullPath(path), root, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsInsideRoot(string filePath, string normalizedRoot)
+    {
+        return IoPath.GetFullPath(filePath).StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetRootDisplayName(string normalizedRoot)
+    {
+        var trimmed = normalizedRoot.TrimEnd(IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar);
+        return trimmed.EndsWith(':') ? normalizedRoot : IoPath.GetFileName(trimmed);
+    }
+
+    private static T? FindVisualAncestor<T>(DependencyObject? source) where T : DependencyObject
+    {
+        while (source is not null)
+        {
+            if (source is T match)
+            {
+                return match;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return null;
+    }
+
+    private string? ShowRenameDialog(string currentName)
+    {
+        var owner = this;
+        var input = new System.Windows.Controls.TextBox
+        {
+            Text = currentName,
+            MinWidth = 360,
+            Margin = new Thickness(0, 8, 0, 12)
+        };
+        input.SelectAll();
+
+        var okButton = new System.Windows.Controls.Button
+        {
+            Content = "Rename",
+            IsDefault = true,
+            MinWidth = 84,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        var cancelButton = new System.Windows.Controls.Button
+        {
+            Content = "Cancel",
+            IsCancel = true,
+            MinWidth = 84,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+
+        var buttonPanel = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+        buttonPanel.Children.Add(okButton);
+        buttonPanel.Children.Add(cancelButton);
+
+        var panel = new StackPanel
+        {
+            Margin = new Thickness(16)
+        };
+        panel.Children.Add(new TextBlock { Text = "New name", Foreground = MediaBrushes.DimGray });
+        panel.Children.Add(input);
+        panel.Children.Add(buttonPanel);
+
+        var dialog = new Window
+        {
+            Title = "Rename",
+            Content = panel,
+            Owner = owner,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode = ResizeMode.NoResize,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            ShowInTaskbar = false
+        };
+        okButton.Click += (_, _) => dialog.DialogResult = true;
+
+        return dialog.ShowDialog() == true ? input.Text.Trim() : null;
     }
 
     private static Geometry CreateSliceGeometry(WpfPoint center, double radius, double startAngle, double sweepAngle)
