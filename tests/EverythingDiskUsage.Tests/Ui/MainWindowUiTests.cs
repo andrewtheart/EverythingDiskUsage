@@ -2,6 +2,7 @@ using EverythingDiskUsage.Models;
 using EverythingDiskUsage.Services;
 using System.Windows;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 
 namespace EverythingDiskUsage.Tests.Ui;
 
@@ -19,10 +20,50 @@ public sealed class MainWindowUiTests
                 Assert.True(window.LogEachSdkFileCheckBox.IsChecked);
                 Assert.True(window.LogToDebugOutputCheckBox.IsChecked);
                 Assert.Equal("12", window.RetainedLogFilesTextBox.Text);
+                Assert.Equal("◐", window.ThemeGlyphTextBlock.Text);
+                Assert.Contains("Theme: Auto", window.ThemeButton.ToolTip?.ToString(), StringComparison.Ordinal);
                 Assert.Equal("Ready", window.StatusTextBlock.Text);
                 Assert.True(window.ScanButton.IsEnabled);
                 Assert.False(window.CancelButton.IsEnabled);
                 Assert.EndsWith("settings.json", window.SettingsFilePathTextBlock.Text, StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            await Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public void ThemeButton_CyclesModesPersistsSelectionAndAppliesPalette()
+    {
+        WpfTestHost.Run(async () =>
+        {
+            var settings = new TestSettingsService(new AppSettings { ThemeMode = AppThemeMode.Auto });
+            var window = CreateWindow(new ImmediateAnalyzer(TestData.ScanResultFromFiles(NewRootPath())), new TestLogger(), settings);
+
+            try
+            {
+                Click(window.ThemeButton);
+
+                Assert.Equal(AppThemeMode.Light, settings.SavedSettings.ThemeMode);
+                Assert.Equal("☀", window.ThemeGlyphTextBlock.Text);
+                Assert.Equal(Color.FromRgb(0xF4, 0xF6, 0xF9), ((SolidColorBrush)window.Resources["WindowBackground"]).Color);
+
+                Click(window.ThemeButton);
+
+                Assert.Equal(AppThemeMode.Dark, settings.SavedSettings.ThemeMode);
+                Assert.Equal("☾", window.ThemeGlyphTextBlock.Text);
+                Assert.Equal(Color.FromRgb(0x15, 0x19, 0x1F), ((SolidColorBrush)window.Resources["WindowBackground"]).Color);
+                Assert.Equal(Color.FromRgb(0xF2, 0xF5, 0xF8), ((SolidColorBrush)window.Resources["PrimaryText"]).Color);
+
+                Click(window.ThemeButton);
+
+                Assert.Equal(AppThemeMode.Auto, settings.SavedSettings.ThemeMode);
+                Assert.Equal("◐", window.ThemeGlyphTextBlock.Text);
+                Assert.Equal(3, settings.SaveCount);
             }
             finally
             {

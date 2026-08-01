@@ -1,10 +1,12 @@
 using EverythingDiskUsage.Models;
 using EverythingDiskUsage.Native;
 using EverythingDiskUsage.Services;
+using Microsoft.Win32;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -15,6 +17,7 @@ using Forms = System.Windows.Forms;
 using IoPath = System.IO.Path;
 using MediaBrushes = System.Windows.Media.Brushes;
 using MediaBrush = System.Windows.Media.Brush;
+using MediaColor = System.Windows.Media.Color;
 using PathShape = System.Windows.Shapes.Path;
 using WpfKeyEventArgs = System.Windows.Input.KeyEventArgs;
 using WpfPoint = System.Windows.Point;
@@ -51,10 +54,50 @@ public partial class MainWindow : Window
     private IReadOnlyList<FileUsageItem> _allFilesSorted = [];
     private bool _isUpdatingScanView;
     private AppSettings _appSettings = new();
+    private bool _isListeningForSystemThemeChanges;
     private DateTime _lastUiProgressLogUtc = DateTime.MinValue;
     private long _lastUiProgressLoggedFiles;
 
     private sealed record LogLevelOption(string DisplayName, AppLogLevel Level);
+
+    private sealed record ThemePalette(
+        MediaColor WindowBackground,
+        MediaColor PanelBackground,
+        MediaColor SurfaceAltBackground,
+        MediaColor GroupRowBackground,
+        MediaColor ControlBackground,
+        MediaColor BorderColor,
+        MediaColor MutedText,
+        MediaColor PrimaryText,
+        MediaColor Accent);
+
+    private static readonly ThemePalette LightThemePalette = new(
+        MediaColor.FromRgb(0xF4, 0xF6, 0xF9),
+        MediaColor.FromRgb(0xFF, 0xFF, 0xFF),
+        MediaColor.FromRgb(0xEE, 0xF2, 0xF6),
+        MediaColor.FromRgb(0xE9, 0xEF, 0xF5),
+        MediaColor.FromRgb(0xFF, 0xFF, 0xFF),
+        MediaColor.FromRgb(0xD8, 0xDE, 0xE8),
+        MediaColor.FromRgb(0x5F, 0x6B, 0x7A),
+        MediaColor.FromRgb(0x18, 0x21, 0x2F),
+        MediaColor.FromRgb(0x15, 0x7A, 0x8C));
+
+    private static readonly ThemePalette DarkThemePalette = new(
+        MediaColor.FromRgb(0x15, 0x19, 0x1F),
+        MediaColor.FromRgb(0x1D, 0x23, 0x2B),
+        MediaColor.FromRgb(0x20, 0x28, 0x32),
+        MediaColor.FromRgb(0x29, 0x32, 0x3D),
+        MediaColor.FromRgb(0x25, 0x2D, 0x37),
+        MediaColor.FromRgb(0x3C, 0x46, 0x54),
+        MediaColor.FromRgb(0xAE, 0xB8, 0xC5),
+        MediaColor.FromRgb(0xF2, 0xF5, 0xF8),
+        MediaColor.FromRgb(0x2A, 0xA6, 0xB8));
+
+    private const int DwmUseImmersiveDarkMode = 20;
+    private const int DwmUseImmersiveDarkModeBefore20H1 = 19;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr windowHandle, int attribute, ref int attributeValue, int attributeSize);
 
     public MainWindow()
         : this(new DiskUsageAnalyzer(), new AppLoggerAdapter(), new AppSettingsServiceAdapter(), new ShellContextMenuService())
@@ -89,6 +132,7 @@ public partial class MainWindow : Window
         FileDetailsGrid.ItemsSource = _fileDetails;
         DuplicatesGrid.ItemsSource = _duplicateRows;
         ConfigureSettingsUi();
+        ListenForSystemThemeChanges();
         if (configureNotifications)
         {
             ConfigureNotifications();
@@ -100,9 +144,21 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _logger.Info("MainWindow closing; disposing notification icon");
+        if (_isListeningForSystemThemeChanges)
+        {
+            SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
+            _isListeningForSystemThemeChanges = false;
+        }
+
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         base.OnClosed(e);
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        UpdateTitleBarTheme(AppThemeService.Resolve(_appSettings.ThemeMode));
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -346,13 +402,107 @@ public partial class MainWindow : Window
 
     private void LoadSettingsIntoUi(AppSettings settings)
     {
-        _logger.Debug($"Loading settings into UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
+        _logger.Debug($"Loading settings into UI; minimumLogLevel={settings.MinimumLogLevel}; themeMode={settings.ThemeMode}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
         _appSettings = _settingsService.Normalize(settings);
+        ApplyTheme(_appSettings.ThemeMode);
         LogLevelComboBox.SelectedValue = _appSettings.MinimumLogLevel;
         LogEachSdkFileCheckBox.IsChecked = _appSettings.LogEachSdkFile;
         LogToDebugOutputCheckBox.IsChecked = _appSettings.LogToDebugOutput;
         RetainedLogFilesTextBox.Text = _appSettings.RetainedLogFiles.ToString(CultureInfo.InvariantCulture);
         SettingsStatusTextBlock.Text = string.Empty;
+    }
+
+    private void ListenForSystemThemeChanges()
+    {
+        try
+        {
+            SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
+            _isListeningForSystemThemeChanges = true;
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning($"Could not listen for Windows theme changes: {ex.Message}");
+        }
+    }
+
+    private void SystemEvents_UserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (_appSettings.ThemeMode != AppThemeMode.Auto || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() => ApplyTheme(AppThemeMode.Auto));
+    }
+
+    private void ThemeButton_Click(object sender, RoutedEventArgs e)
+    {
+        var nextMode = AppThemeService.GetNextMode(_appSettings.ThemeMode);
+        var updatedSettings = _appSettings.Clone();
+        updatedSettings.ThemeMode = nextMode;
+
+        try
+        {
+            _settingsService.Save(updatedSettings);
+            _appSettings = updatedSettings;
+            ApplyTheme(nextMode);
+            _logger.Info($"Theme changed from header; mode={nextMode}; effectiveTheme={AppThemeService.Resolve(nextMode)}");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to save theme setting", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "Theme change failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ApplyTheme(AppThemeMode mode)
+    {
+        var effectiveTheme = AppThemeService.Resolve(mode);
+        var palette = effectiveTheme == AppTheme.Dark ? DarkThemePalette : LightThemePalette;
+
+        SetThemeBrush("WindowBackground", palette.WindowBackground);
+        SetThemeBrush("PanelBackground", palette.PanelBackground);
+        SetThemeBrush("SurfaceAltBackground", palette.SurfaceAltBackground);
+        SetThemeBrush("GroupRowBackground", palette.GroupRowBackground);
+        SetThemeBrush("ControlBackground", palette.ControlBackground);
+        SetThemeBrush("BorderColor", palette.BorderColor);
+        SetThemeBrush("MutedText", palette.MutedText);
+        SetThemeBrush("PrimaryText", palette.PrimaryText);
+        SetThemeBrush("AccentBrush", palette.Accent);
+
+        ThemeGlyphTextBlock.Text = mode switch
+        {
+            AppThemeMode.Light => "☀",
+            AppThemeMode.Dark => "☾",
+            _ => "◐"
+        };
+
+        var nextMode = AppThemeService.GetNextMode(mode);
+        ThemeButton.ToolTip = $"Theme: {mode}{(mode == AppThemeMode.Auto ? $" ({effectiveTheme.ToString().ToLowerInvariant()})" : string.Empty)}. Click for {nextMode}.";
+        UpdateTitleBarTheme(effectiveTheme);
+    }
+
+    private void SetThemeBrush(string resourceKey, MediaColor color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        Resources[resourceKey] = brush;
+    }
+
+    private void UpdateTitleBarTheme(AppTheme effectiveTheme)
+    {
+        var windowHandle = new WindowInteropHelper(this).Handle;
+        if (windowHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var useDarkMode = effectiveTheme == AppTheme.Dark ? 1 : 0;
+        var result = DwmSetWindowAttribute(windowHandle, DwmUseImmersiveDarkMode, ref useDarkMode, sizeof(int));
+        if (result != 0)
+        {
+            DwmSetWindowAttribute(windowHandle, DwmUseImmersiveDarkModeBefore20H1, ref useDarkMode, sizeof(int));
+        }
     }
 
     private void SaveSettingsButton_Click(object sender, RoutedEventArgs e)
@@ -442,6 +592,7 @@ public partial class MainWindow : Window
         settings = new AppSettings
         {
             MinimumLogLevel = selectedLevel,
+            ThemeMode = _appSettings.ThemeMode,
             LogEachSdkFile = LogEachSdkFileCheckBox.IsChecked == true,
             LogToDebugOutput = LogToDebugOutputCheckBox.IsChecked == true,
             RetainedLogFiles = retainedLogFiles

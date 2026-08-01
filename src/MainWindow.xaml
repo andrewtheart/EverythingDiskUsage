@@ -12,9 +12,13 @@
         MinHeight="620"
         MinWidth="920"
         Loaded="Window_Loaded"
-        Background="#F4F6F9">
+        Background="{DynamicResource WindowBackground}">
     <Window.Resources>
+        <SolidColorBrush x:Key="WindowBackground" Color="#F4F6F9" />
         <SolidColorBrush x:Key="PanelBackground" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="SurfaceAltBackground" Color="#EEF2F6" />
+        <SolidColorBrush x:Key="GroupRowBackground" Color="#E9EFF5" />
+        <SolidColorBrush x:Key="ControlBackground" Color="#FFFFFF" />
         <SolidColorBrush x:Key="BorderColor" Color="#D8DEE8" />
         <SolidColorBrush x:Key="MutedText" Color="#5F6B7A" />
         <SolidColorBrush x:Key="PrimaryText" Color="#18212F" />
@@ -25,32 +29,221 @@
             <Setter Property="MinWidth" Value="78" />
             <Setter Property="Margin" Value="8,0,0,0" />
             <Setter Property="Padding" Value="12,0" />
-            <Setter Property="Background" Value="#FFFFFF" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="{StaticResource PrimaryText}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
             <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.86" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.68" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.42" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="PrimaryButton" TargetType="{x:Type Button}" BasedOn="{StaticResource ToolbarButton}">
-            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
             <Setter Property="Foreground" Value="White" />
+        </Style>
+
+        <Style x:Key="IconButton" TargetType="{x:Type Button}" BasedOn="{StaticResource ToolbarButton}">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="MinWidth" Value="34" />
+            <Setter Property="Margin" Value="12,0,0,0" />
+            <Setter Property="Padding" Value="0" />
         </Style>
 
         <Style TargetType="{x:Type TextBox}">
             <Setter Property="Height" Value="34" />
             <Setter Property="Padding" Value="10,6" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource PrimaryText}" />
         </Style>
 
         <Style TargetType="{x:Type ComboBox}">
             <Setter Property="Height" Value="34" />
             <Setter Property="Padding" Value="8,4" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
             <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <ToggleButton x:Name="DropDownToggle"
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="{TemplateBinding BorderThickness}"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}">
+                                            <Grid>
+                                                <ContentPresenter Margin="10,0,30,0"
+                                                                  HorizontalAlignment="Left"
+                                                                  VerticalAlignment="Center"
+                                                                  Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
+                                                                  ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
+                                                                  ContentStringFormat="{Binding SelectionBoxItemStringFormat, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}" />
+                                                <Path HorizontalAlignment="Right"
+                                                      VerticalAlignment="Center"
+                                                      Margin="0,0,11,0"
+                                                      Fill="{DynamicResource PrimaryText}"
+                                                      Data="M 0 0 L 8 0 L 4 4 Z" />
+                                            </Grid>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   PopupAnimation="Fade">
+                                <Border MinWidth="{Binding ActualWidth, ElementName=DropDownToggle}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                        Background="{DynamicResource ControlBackground}"
+                                        BorderBrush="{DynamicResource BorderColor}"
+                                        BorderThickness="1">
+                                    <ScrollViewer CanContentScroll="True">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="DropDownToggle" Property="Opacity" Value="0.42" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="{x:Type ComboBoxItem}">
+            <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                        <Border x:Name="ItemBorder" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource SurfaceAltBackground}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="{x:Type TabControl}">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+        </Style>
+
+        <Style TargetType="{x:Type TabItem}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TabItem}">
+                        <Border x:Name="TabBorder"
+                                Margin="0,0,4,0"
+                                Padding="10,5"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              ContentSource="Header" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource SurfaceAltBackground}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource PanelBackground}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="{x:Type ProgressBar}">
+            <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
+        </Style>
+
+        <Style TargetType="{x:Type TreeViewItem}">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+        </Style>
+
+        <Style TargetType="{x:Type ListBoxItem}">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+        </Style>
+
+        <Style TargetType="{x:Type DataGrid}">
+            <Setter Property="Background" Value="{DynamicResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderColor}" />
+            <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource BorderColor}" />
+            <Setter Property="RowBackground" Value="{DynamicResource PanelBackground}" />
+        </Style>
+
+        <Style TargetType="{x:Type DataGridRow}">
+            <Setter Property="Background" Value="{DynamicResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
+        </Style>
+
+        <Style TargetType="{x:Type DataGridColumnHeader}">
+            <Setter Property="Background" Value="{DynamicResource SurfaceAltBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
         </Style>
 
         <HierarchicalDataTemplate DataType="{x:Type models:DirectoryUsageNode}" ItemsSource="{Binding Children}">
@@ -62,11 +255,11 @@
                     <ColumnDefinition Width="85" />
                     <ColumnDefinition Width="80" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding DisplayName}" Foreground="{StaticResource PrimaryText}" TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="1" Text="{Binding SizeText}" HorizontalAlignment="Right" Foreground="{StaticResource PrimaryText}" />
-                <TextBlock Grid.Column="2" Text="{Binding PercentText}" HorizontalAlignment="Right" Foreground="{StaticResource MutedText}" />
-                <TextBlock Grid.Column="3" Text="{Binding FileCountText}" HorizontalAlignment="Right" Foreground="{StaticResource MutedText}" />
-                <TextBlock Grid.Column="4" Text="{Binding FolderCountText}" HorizontalAlignment="Right" Foreground="{StaticResource MutedText}" />
+                <TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource PrimaryText}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1" Text="{Binding SizeText}" HorizontalAlignment="Right" Foreground="{DynamicResource PrimaryText}" />
+                <TextBlock Grid.Column="2" Text="{Binding PercentText}" HorizontalAlignment="Right" Foreground="{DynamicResource MutedText}" />
+                <TextBlock Grid.Column="3" Text="{Binding FileCountText}" HorizontalAlignment="Right" Foreground="{DynamicResource MutedText}" />
+                <TextBlock Grid.Column="4" Text="{Binding FolderCountText}" HorizontalAlignment="Right" Foreground="{DynamicResource MutedText}" />
             </Grid>
         </HierarchicalDataTemplate>
 
@@ -78,10 +271,10 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Border Width="12" Height="12" Background="{Binding Fill}" CornerRadius="2" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" Text="{Binding Label}" Margin="8,0,12,0" TextTrimming="CharacterEllipsis" Foreground="{StaticResource PrimaryText}" />
+                <TextBlock Grid.Column="1" Text="{Binding Label}" Margin="8,0,12,0" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource PrimaryText}" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
-                    <TextBlock Text="{Binding SizeText}" Foreground="{StaticResource PrimaryText}" MinWidth="70" TextAlignment="Right" />
-                    <TextBlock Text="{Binding PercentText}" Foreground="{StaticResource MutedText}" MinWidth="58" TextAlignment="Right" Margin="8,0,0,0" />
+                    <TextBlock Text="{Binding SizeText}" Foreground="{DynamicResource PrimaryText}" MinWidth="70" TextAlignment="Right" />
+                    <TextBlock Text="{Binding PercentText}" Foreground="{DynamicResource MutedText}" MinWidth="58" TextAlignment="Right" Margin="8,0,0,0" />
                 </StackPanel>
             </Grid>
         </DataTemplate>
@@ -95,7 +288,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="#FFFFFF" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,14">
+        <Border Grid.Row="0" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,14">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -103,10 +296,17 @@
                 </Grid.RowDefinitions>
                 <DockPanel LastChildFill="False">
                     <StackPanel DockPanel.Dock="Left">
-                        <TextBlock Text="Everything Disk Usage" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
-                        <TextBlock Text="Everything SDK" Foreground="{StaticResource MutedText}" Margin="0,2,0,0" />
+                        <TextBlock Text="Everything Disk Usage" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                        <TextBlock Text="Everything SDK" Foreground="{DynamicResource MutedText}" Margin="0,2,0,0" />
                     </StackPanel>
-                    <TextBlock x:Name="SdkStatusTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" VerticalAlignment="Center" />
+                    <Button x:Name="ThemeButton"
+                            DockPanel.Dock="Right"
+                            Style="{StaticResource IconButton}"
+                            Click="ThemeButton_Click"
+                            AutomationProperties.Name="Change color theme">
+                        <TextBlock x:Name="ThemeGlyphTextBlock" Text="◐" FontSize="18" VerticalAlignment="Center" />
+                    </Button>
+                    <TextBlock x:Name="SdkStatusTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" />
                 </DockPanel>
 
                 <Grid Grid.Row="1" Margin="0,14,0,0">
@@ -126,7 +326,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Background="#EEF2F6" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,10">
+        <Border Grid.Row="1" Background="{DynamicResource SurfaceAltBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,10">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -136,8 +336,8 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="StatusTextBlock" Foreground="{StaticResource PrimaryText}" Text="Ready" />
-                <TextBlock x:Name="SummaryTextBlock" Grid.Column="1" Foreground="{StaticResource MutedText}" />
+                <TextBlock x:Name="StatusTextBlock" Foreground="{DynamicResource PrimaryText}" Text="Ready" />
+                <TextBlock x:Name="SummaryTextBlock" Grid.Column="1" Foreground="{DynamicResource MutedText}" />
                 <ProgressBar x:Name="ScanProgressBar" Grid.Row="1" Grid.ColumnSpan="2" Height="6" Margin="0,8,0,0" Minimum="0" Maximum="100" Value="0" />
             </Grid>
         </Border>
@@ -151,7 +351,7 @@
                 <ColumnDefinition Width="2*" MinWidth="340" />
             </Grid.ColumnDefinitions>
 
-            <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
+            <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -165,11 +365,11 @@
                             <ColumnDefinition Width="85" />
                             <ColumnDefinition Width="80" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="Name" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" />
-                        <TextBlock Grid.Column="1" Text="Size" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
-                        <TextBlock Grid.Column="2" Text="%" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
-                        <TextBlock Grid.Column="3" Text="Files" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
-                        <TextBlock Grid.Column="4" Text="Folders" FontWeight="SemiBold" Foreground="{StaticResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Text="Name" FontWeight="SemiBold" Foreground="{DynamicResource MutedText}" />
+                        <TextBlock Grid.Column="1" Text="Size" FontWeight="SemiBold" Foreground="{DynamicResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="2" Text="%" FontWeight="SemiBold" Foreground="{DynamicResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="3" Text="Files" FontWeight="SemiBold" Foreground="{DynamicResource MutedText}" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="4" Text="Folders" FontWeight="SemiBold" Foreground="{DynamicResource MutedText}" HorizontalAlignment="Right" />
                     </Grid>
                     <TreeView x:Name="UsageTree"
                               Grid.Row="1"
@@ -184,7 +384,7 @@
 
             <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" />
 
-            <Border Grid.Column="2" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
+            <Border Grid.Column="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -208,9 +408,9 @@
                                     Visibility="Collapsed"
                                     ToolTip="Show parent folder"
                                     Click="PieBackButton_Click" />
-                            <TextBlock x:Name="SelectedNameTextBlock" Grid.Column="1" Text="No scan loaded" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                            <TextBlock x:Name="SelectedNameTextBlock" Grid.Column="1" Text="No scan loaded" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                         </Grid>
-                        <TextBlock x:Name="SelectedPathTextBlock" Foreground="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,3,0,12" />
+                        <TextBlock x:Name="SelectedPathTextBlock" Foreground="{DynamicResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,3,0,12" />
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -218,23 +418,23 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="Size" Foreground="{StaticResource MutedText}" />
-                                <TextBlock x:Name="SelectedSizeTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                                <TextBlock Text="Size" Foreground="{DynamicResource MutedText}" />
+                                <TextBlock x:Name="SelectedSizeTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Margin="12,0,0,0">
-                                <TextBlock Text="Files" Foreground="{StaticResource MutedText}" />
-                                <TextBlock x:Name="SelectedFilesTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                                <TextBlock Text="Files" Foreground="{DynamicResource MutedText}" />
+                                <TextBlock x:Name="SelectedFilesTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
                             </StackPanel>
                             <StackPanel Grid.Column="2" Margin="12,0,0,0">
-                                <TextBlock Text="Folders" Foreground="{StaticResource MutedText}" />
-                                <TextBlock x:Name="SelectedFoldersTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                                <TextBlock Text="Folders" Foreground="{DynamicResource MutedText}" />
+                                <TextBlock x:Name="SelectedFoldersTextBlock" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
                             </StackPanel>
                         </Grid>
                     </StackPanel>
 
                     <Grid Grid.Row="1" MinHeight="340" Margin="0,14,0,10">
                         <Canvas x:Name="PieCanvas" SizeChanged="PieCanvas_SizeChanged" />
-                        <TextBlock x:Name="EmptyPieTextBlock" Text="No size data" Foreground="{StaticResource MutedText}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <TextBlock x:Name="EmptyPieTextBlock" Text="No size data" Foreground="{DynamicResource MutedText}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Grid>
 
                     <ListBox x:Name="LegendItems"
@@ -257,15 +457,15 @@
                         <ColumnDefinition Width="4*" MinWidth="520" />
                     </Grid.ColumnDefinitions>
 
-                    <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
+                    <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
                             <DockPanel Margin="2,0,2,8">
-                                <TextBlock Text="Folders" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
-                                <TextBlock x:Name="FolderDetailsSummaryTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" />
+                                <TextBlock Text="Folders" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                <TextBlock x:Name="FolderDetailsSummaryTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" />
                             </DockPanel>
                             <DataGrid x:Name="DirectoryDetailsGrid"
                                       Grid.Row="1"
@@ -299,15 +499,15 @@
 
                     <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" />
 
-                    <Border Grid.Column="2" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
+                    <Border Grid.Column="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
                             <DockPanel Margin="2,0,2,8">
-                                <TextBlock Text="Files" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
-                                <TextBlock x:Name="FileDetailsSummaryTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" />
+                                <TextBlock Text="Files" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                <TextBlock x:Name="FileDetailsSummaryTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" />
                             </DockPanel>
                             <DataGrid x:Name="FileDetailsGrid"
                                       Grid.Row="1"
@@ -323,11 +523,11 @@
                                       EnableColumnVirtualization="True"
                                       PreviewMouseRightButtonDown="FileDetailsGrid_PreviewMouseRightButtonDown">
                                 <DataGrid.RowStyle>
-                                    <Style TargetType="{x:Type DataGridRow}">
+                                    <Style TargetType="{x:Type DataGridRow}" BasedOn="{StaticResource {x:Type DataGridRow}}">
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsGroup}" Value="True">
                                                 <Setter Property="FontWeight" Value="SemiBold" />
-                                                <Setter Property="Background" Value="#E9EFF5" />
+                                                <Setter Property="Background" Value="{DynamicResource GroupRowBackground}" />
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
@@ -348,7 +548,7 @@
 
             <TabItem Header="Duplicates">
                 <Grid Margin="0,10,0,0">
-                    <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
+                    <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -356,10 +556,10 @@
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
                             <DockPanel Margin="2,0,2,4">
-                                <TextBlock Text="Duplicate Files" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
-                                <TextBlock x:Name="DuplicatesSummaryTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" VerticalAlignment="Center" />
+                                <TextBlock Text="Duplicate Files" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                <TextBlock x:Name="DuplicatesSummaryTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" />
                             </DockPanel>
-                            <TextBlock Grid.Row="1" Foreground="{StaticResource MutedText}" Margin="2,0,2,8" FontSize="12"
+                            <TextBlock Grid.Row="1" Foreground="{DynamicResource MutedText}" Margin="2,0,2,8" FontSize="12"
                                        Text="Matched by identical file name and size  ·  Right-click any file row to open its shell menu" />
                             <DataGrid x:Name="DuplicatesGrid"
                                       Grid.Row="2"
@@ -375,11 +575,11 @@
                                       EnableColumnVirtualization="True"
                                       PreviewMouseRightButtonDown="DuplicatesGrid_PreviewMouseRightButtonDown">
                                 <DataGrid.RowStyle>
-                                    <Style TargetType="{x:Type DataGridRow}">
+                                    <Style TargetType="{x:Type DataGridRow}" BasedOn="{StaticResource {x:Type DataGridRow}}">
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsGroup}" Value="True">
                                                 <Setter Property="FontWeight" Value="SemiBold" />
-                                                <Setter Property="Background" Value="#E9EFF5" />
+                                                <Setter Property="Background" Value="{DynamicResource GroupRowBackground}" />
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
@@ -399,7 +599,7 @@
 
             <TabItem Header="Settings">
                 <Grid Margin="0,10,0,0">
-                    <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
+                    <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -410,8 +610,8 @@
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
                             <DockPanel Margin="0,0,0,14">
-                                <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
-                                <TextBlock x:Name="SettingsStatusTextBlock" DockPanel.Dock="Right" Foreground="{StaticResource MutedText}" VerticalAlignment="Center" />
+                                <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                <TextBlock x:Name="SettingsStatusTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" />
                             </DockPanel>
 
                             <Grid Grid.Row="1" Margin="0,0,0,10">
@@ -420,13 +620,13 @@
                                     <ColumnDefinition Width="260" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Log level" Foreground="{StaticResource PrimaryText}" VerticalAlignment="Center" />
+                                <TextBlock Text="Log level" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
                                 <ComboBox x:Name="LogLevelComboBox" Grid.Column="1" />
                             </Grid>
 
                             <StackPanel Grid.Row="2" Margin="0,0,0,10">
-                                <CheckBox x:Name="LogEachSdkFileCheckBox" Content="Log every SDK file result" Foreground="{StaticResource PrimaryText}" Margin="0,0,0,8" />
-                                <CheckBox x:Name="LogToDebugOutputCheckBox" Content="Write logs to debug output" Foreground="{StaticResource PrimaryText}" />
+                                <CheckBox x:Name="LogEachSdkFileCheckBox" Content="Log every SDK file result" Foreground="{DynamicResource PrimaryText}" Margin="0,0,0,8" />
+                                <CheckBox x:Name="LogToDebugOutputCheckBox" Content="Write logs to debug output" Foreground="{DynamicResource PrimaryText}" />
                             </StackPanel>
 
                             <Grid Grid.Row="3" Margin="0,0,0,14">
@@ -435,7 +635,7 @@
                                     <ColumnDefinition Width="120" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Retained log files" Foreground="{StaticResource PrimaryText}" VerticalAlignment="Center" />
+                                <TextBlock Text="Retained log files" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
                                 <TextBox x:Name="RetainedLogFilesTextBox" Grid.Column="1" />
                             </Grid>
 
@@ -456,12 +656,12 @@
                                     <ColumnDefinition Width="180" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Settings file" Foreground="{StaticResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,8" />
-                                <TextBlock x:Name="SettingsFilePathTextBlock" Grid.Column="1" Foreground="{StaticResource PrimaryText}" TextWrapping="Wrap" Margin="0,0,0,8" />
-                                <TextBlock Grid.Row="1" Text="Log folder" Foreground="{StaticResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,8" />
-                                <TextBlock x:Name="LogDirectoryPathTextBlock" Grid.Row="1" Grid.Column="1" Foreground="{StaticResource PrimaryText}" TextWrapping="Wrap" Margin="0,0,0,8" />
-                                <TextBlock Grid.Row="2" Text="Current log" Foreground="{StaticResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,0" />
-                                <TextBlock x:Name="CurrentLogFilePathTextBlock" Grid.Row="2" Grid.Column="1" Foreground="{StaticResource PrimaryText}" TextWrapping="Wrap" />
+                                <TextBlock Text="Settings file" Foreground="{DynamicResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,8" />
+                                <TextBlock x:Name="SettingsFilePathTextBlock" Grid.Column="1" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                <TextBlock Grid.Row="1" Text="Log folder" Foreground="{DynamicResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,8" />
+                                <TextBlock x:Name="LogDirectoryPathTextBlock" Grid.Row="1" Grid.Column="1" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                <TextBlock Grid.Row="2" Text="Current log" Foreground="{DynamicResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,0" />
+                                <TextBlock x:Name="CurrentLogFilePathTextBlock" Grid.Row="2" Grid.Column="1" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" />
                             </Grid>
                         </Grid>
                     </Border>
@@ -469,10 +669,10 @@
             </TabItem>
         </TabControl>
 
-        <Border Grid.Row="3" Background="#FFFFFF" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,1,0,0" Padding="16,9">
+        <Border Grid.Row="3" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="0,1,0,0" Padding="16,9">
             <DockPanel>
-                <TextBlock x:Name="DriveSummaryTextBlock" Foreground="{StaticResource MutedText}" />
-                <TextBlock DockPanel.Dock="Right" Text="Powered by voidtools Everything SDK" Foreground="{StaticResource MutedText}" />
+                <TextBlock x:Name="DriveSummaryTextBlock" Foreground="{DynamicResource MutedText}" />
+                <TextBlock DockPanel.Dock="Right" Text="Powered by voidtools Everything SDK" Foreground="{DynamicResource MutedText}" />
             </DockPanel>
         </Border>
     </Grid>
