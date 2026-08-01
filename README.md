@@ -17,7 +17,7 @@ The installer is self-contained, so it includes the .NET runtime files needed by
 - Windows 10/11 x64
 - Everything Search installed from [voidtools](https://www.voidtools.com/downloads/)
 - Everything Search running in the background with its database loaded
-- .NET 10 SDK only if you want to build from source
+- .NET 11 SDK Preview 6 or newer only if you want to build from source
 - Inno Setup 6 only if you want to rebuild the installer locally
 
 Install Inno Setup machine-wide with:
@@ -166,7 +166,7 @@ dotnet build .\src\EverythingDiskUsage.csproj -c Release
 The normal build output is written under:
 
 ```text
-src\bin\<Configuration>\net10.0-windows\
+src\bin\<Configuration>\net11.0-windows\
 ```
 
 ## Rebuild The Installer
