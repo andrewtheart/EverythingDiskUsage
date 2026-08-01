@@ -99,6 +99,7 @@ If a file or folder no longer exists, the app refreshes the current view from th
 
 Open the **Settings** tab to adjust logging behavior.
 
+- Use the theme glyph in the window header to cycle through **Auto**, **Light**, and **Dark**. Auto is the default and follows the Windows app theme.
 - **Log level** controls how verbose the app log is.
 - **Log every SDK file result** records every accepted file path from the Everything SDK.
 - **Write logs to debug output** mirrors log lines to debug listeners.
