@@ -25,11 +25,39 @@ public sealed class AppSettingsTests
     }
 
     [Fact]
+    public void Normalize_ReplacesInvalidThemeModeWithAuto()
+    {
+        var normalized = AppSettingsService.Normalize(new AppSettings { ThemeMode = (AppThemeMode)999 });
+
+        Assert.Equal(AppThemeMode.Auto, normalized.ThemeMode);
+    }
+
+    [Theory]
+    [InlineData(AppThemeMode.Auto, AppThemeMode.Light)]
+    [InlineData(AppThemeMode.Light, AppThemeMode.Dark)]
+    [InlineData(AppThemeMode.Dark, AppThemeMode.Auto)]
+    public void GetNextMode_CyclesAllThemeModes(AppThemeMode current, AppThemeMode expected)
+    {
+        Assert.Equal(expected, AppThemeService.GetNextMode(current));
+    }
+
+    [Theory]
+    [InlineData(AppThemeMode.Auto, AppTheme.Light, AppTheme.Light)]
+    [InlineData(AppThemeMode.Auto, AppTheme.Dark, AppTheme.Dark)]
+    [InlineData(AppThemeMode.Light, AppTheme.Dark, AppTheme.Light)]
+    [InlineData(AppThemeMode.Dark, AppTheme.Light, AppTheme.Dark)]
+    public void Resolve_UsesSystemThemeOnlyForAuto(AppThemeMode mode, AppTheme systemTheme, AppTheme expected)
+    {
+        Assert.Equal(expected, AppThemeService.Resolve(mode, systemTheme));
+    }
+
+    [Fact]
     public void Clone_ReturnsIndependentCopy()
     {
         var original = new AppSettings
         {
             MinimumLogLevel = AppLogLevel.Debug,
+            ThemeMode = AppThemeMode.Dark,
             LogEachSdkFile = true,
             LogToDebugOutput = true,
             RetainedLogFiles = 7
@@ -39,6 +67,7 @@ public sealed class AppSettingsTests
         clone.RetainedLogFiles = 99;
 
         Assert.Equal(AppLogLevel.Debug, clone.MinimumLogLevel);
+        Assert.Equal(AppThemeMode.Dark, clone.ThemeMode);
         Assert.True(clone.LogEachSdkFile);
         Assert.True(clone.LogToDebugOutput);
         Assert.Equal(7, original.RetainedLogFiles);

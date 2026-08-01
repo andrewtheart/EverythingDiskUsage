@@ -8,6 +8,8 @@ public sealed class AppSettings
 {
     public AppLogLevel MinimumLogLevel { get; set; } = AppLogLevel.Info;
 
+    public AppThemeMode ThemeMode { get; set; } = AppThemeMode.Auto;
+
     public bool LogEachSdkFile { get; set; }
 
     public bool LogToDebugOutput { get; set; }
@@ -19,6 +21,7 @@ public sealed class AppSettings
         return new AppSettings
         {
             MinimumLogLevel = MinimumLogLevel,
+            ThemeMode = ThemeMode,
             LogEachSdkFile = LogEachSdkFile,
             LogToDebugOutput = LogToDebugOutput,
             RetainedLogFiles = RetainedLogFiles
@@ -76,6 +79,7 @@ public static class AppSettingsService
         return new AppSettings
         {
             MinimumLogLevel = AppLogLevel.Info,
+            ThemeMode = AppThemeMode.Auto,
             LogEachSdkFile = IsEnabled("EVERYTHING_DISK_USAGE_LOG_EACH_FILE"),
             LogToDebugOutput = false,
             RetainedLogFiles = 20
@@ -88,6 +92,11 @@ public static class AppSettingsService
         if (!Enum.IsDefined(normalized.MinimumLogLevel))
         {
             normalized.MinimumLogLevel = AppLogLevel.Info;
+        }
+
+        if (!Enum.IsDefined(normalized.ThemeMode))
+        {
+            normalized.ThemeMode = AppThemeMode.Auto;
         }
 
         normalized.RetainedLogFiles = Math.Clamp(normalized.RetainedLogFiles, 1, 500);
