@@ -28,6 +28,12 @@ public sealed record ScanViewSnapshot(
     IReadOnlyList<FileUsageItem> Files,
     DuplicateRowsSnapshot Duplicates);
 
+public sealed record InitialScanViewSnapshot(
+    IReadOnlyList<FileUsageItem> Files,
+    IReadOnlyList<DirectoryUsageNode> Directories,
+    FileDetailsSnapshot FileDetails,
+    DuplicateRowsSnapshot Duplicates);
+
 public static class ScanViewBuilder
 {
     public const int MaxVisibleFileRows = 1000;
@@ -50,6 +56,26 @@ public static class ScanViewBuilder
     public static ScanViewSnapshot BuildScanViewSnapshot(string rootPath, IReadOnlyList<FileUsageItem> files)
     {
         return BuildScanViewSnapshot(rootPath, files, File.Exists);
+    }
+
+    public static InitialScanViewSnapshot BuildInitialScanViewSnapshot(
+        DirectoryUsageNode root,
+        IReadOnlyList<FileUsageItem> files,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var sortedFiles = SortFiles(files).ToList();
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var directories = FlattenDirectories(root).ToList();
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var fileDetails = BuildVisibleFileDetails(root, sortedFiles);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var duplicates = BuildDuplicateSnapshot(sortedFiles);
+
+        return new InitialScanViewSnapshot(sortedFiles, directories, fileDetails, duplicates);
     }
 
     public static ScanViewSnapshot BuildScanViewSnapshot(

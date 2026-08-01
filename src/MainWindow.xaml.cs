@@ -33,10 +33,10 @@ public partial class MainWindow : Window
     private readonly IAppLogger _logger;
     private readonly IAppSettingsService _settingsService;
     private readonly IShellContextMenuService _shellContextMenuService;
-    private readonly ObservableCollection<DirectoryUsageNode> _treeRoots = [];
-    private readonly ObservableCollection<DirectoryUsageNode> _directoryDetails = [];
-    private readonly ObservableCollection<FileDetailRow> _fileDetails = [];
-    private readonly ObservableCollection<DuplicateFileRow> _duplicateRows = [];
+    private readonly BulkObservableCollection<DirectoryUsageNode> _treeRoots = [];
+    private readonly BulkObservableCollection<DirectoryUsageNode> _directoryDetails = [];
+    private readonly BulkObservableCollection<FileDetailRow> _fileDetails = [];
+    private readonly BulkObservableCollection<DuplicateFileRow> _duplicateRows = [];
     private readonly ObservableCollection<LogLevelOption> _logLevelOptions =
     [
         new("Verbose", AppLogLevel.Trace),
@@ -53,6 +53,7 @@ public partial class MainWindow : Window
     private string? _currentRootPath;
     private IReadOnlyList<FileUsageItem> _allFilesSorted = [];
     private bool _isUpdatingScanView;
+    private bool _suppressDirectorySelectionUpdate;
     private AppSettings _appSettings = new();
     private bool _isListeningForSystemThemeChanges;
     private DateTime _lastUiProgressLogUtc = DateTime.MinValue;
@@ -294,30 +295,48 @@ public partial class MainWindow : Window
         _logger.Debug("Cleared previous scan UI state");
 
         var progress = new Progress<ScanProgress>(UpdateProgress);
+        var endToEndStopwatch = Stopwatch.StartNew();
 
         try
         {
             _logger.Info($"Calling DiskUsageAnalyzer.ScanAsync; rootPath='{rootPath}'");
             var result = await _analyzer.ScanAsync(rootPath, progress, _scanCancellation.Token);
             _logger.Info($"ScanAsync completed; totalResults={result.TotalResults}; files={result.Root.FileCount}; bytes={result.Root.SizeBytes}; elapsedMs={result.Elapsed.TotalMilliseconds:0}");
+
+            StatusTextBlock.Text = "Preparing scan results";
+            ScanProgressBar.IsIndeterminate = true;
+            var preparationStopwatch = Stopwatch.StartNew();
+            var viewSnapshot = await Task.Run(
+                () => ScanViewBuilder.BuildInitialScanViewSnapshot(result.Root, result.Files, _scanCancellation.Token),
+                _scanCancellation.Token);
+            preparationStopwatch.Stop();
+            _logger.Info($"Initial scan view prepared; files={viewSnapshot.Files.Count}; folders={viewSnapshot.Directories.Count}; fileRows={viewSnapshot.FileDetails.Rows.Count}; duplicateRows={viewSnapshot.Duplicates.Rows.Count}; elapsedMs={preparationStopwatch.ElapsedMilliseconds}");
+
             _currentRoot = result.Root;
             _currentRootPath = result.Root.FullPath;
-            _treeRoots.Add(result.Root);
+            _treeRoots.ReplaceAll([result.Root]);
+            _allFilesSorted = viewSnapshot.Files;
+            _directoryDetails.ReplaceAll(viewSnapshot.Directories);
+            FolderDetailsSummaryTextBlock.Text = $"{_directoryDetails.Count:N0} folders";
+            _fileDetails.ReplaceAll(viewSnapshot.FileDetails.Rows);
+            FileDetailsSummaryTextBlock.Text = viewSnapshot.FileDetails.SummaryText;
+            ApplyDuplicateSnapshot(viewSnapshot.Duplicates);
+            _selectedNode = result.Root;
 
-            using (_logger.TimedOperation($"Sort file details; fileCount={result.Files.Count}"))
+            _suppressDirectorySelectionUpdate = true;
+            try
             {
-                _allFilesSorted = result.Files
-                    .OrderByDescending(file => file.SizeBytes)
-                    .ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(file => file.FullPath, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                DirectoryDetailsGrid.SelectedItem = result.Root;
+                DirectoryDetailsGrid.ScrollIntoView(result.Root);
+            }
+            finally
+            {
+                _suppressDirectorySelectionUpdate = false;
             }
 
-            _selectedNode = result.Root;
-            PopulateDetails(result.Root);
-            PopulateDuplicates(_allFilesSorted);
             RenderNode(result.Root);
-            StatusTextBlock.Text = $"Scan complete: {result.Root.FileCount:N0} files in {result.Elapsed.TotalSeconds:0.0}s";
+            endToEndStopwatch.Stop();
+            StatusTextBlock.Text = $"Scan complete: {result.Root.FileCount:N0} files in {endToEndStopwatch.Elapsed.TotalSeconds:0.0}s";
             SummaryTextBlock.Text = result.Root.SizeText;
             SdkStatusTextBlock.Text = $"{result.TotalResults:N0} SDK results";
             UpdateDriveSummary(rootPath, result.Root);
@@ -679,6 +698,11 @@ public partial class MainWindow : Window
         {
             _logger.Info($"Directory details selection changed; name='{node.DisplayName}', path='{node.FullPath}', sizeBytes={node.SizeBytes}, files={node.FileCount}, folders={node.FolderCount}");
             _selectedNode = node;
+            if (_suppressDirectorySelectionUpdate)
+            {
+                return;
+            }
+
             RenderNode(node);
             UpdateVisibleFiles(node);
         }
@@ -931,8 +955,7 @@ public partial class MainWindow : Window
             _currentRoot = root;
             _allFilesSorted = snapshot.Files;
 
-            _treeRoots.Clear();
-            _treeRoots.Add(root);
+            _treeRoots.ReplaceAll([root]);
             PopulateDetails(root, selectRoot: false);
 
             var selectedNode = FindDirectoryByPath(root, preferredSelectionPath) ?? FindNearestExistingParentNode(root, preferredSelectionPath) ?? root;
@@ -1027,11 +1050,7 @@ public partial class MainWindow : Window
     private void PopulateDetails(DirectoryUsageNode root, bool selectRoot = true)
     {
         using var operation = _logger.TimedOperation($"PopulateDetails; root='{root.FullPath}'");
-        _directoryDetails.Clear();
-        foreach (var node in FlattenDirectories(root))
-        {
-            _directoryDetails.Add(node);
-        }
+        _directoryDetails.ReplaceAll(FlattenDirectories(root));
 
         FolderDetailsSummaryTextBlock.Text = $"{_directoryDetails.Count:N0} folders";
         _logger.Info($"Directory details populated; folderRows={_directoryDetails.Count}");
@@ -1054,11 +1073,7 @@ public partial class MainWindow : Window
 
     private void ApplyDuplicateSnapshot(DuplicateRowsSnapshot snapshot)
     {
-        _duplicateRows.Clear();
-        foreach (var row in snapshot.Rows)
-        {
-            _duplicateRows.Add(row);
-        }
+        _duplicateRows.ReplaceAll(snapshot.Rows);
 
         if (snapshot.SourceFileCount == 0)
         {
@@ -1087,13 +1102,8 @@ public partial class MainWindow : Window
     private void UpdateVisibleFiles(DirectoryUsageNode node)
     {
         using var operation = _logger.TimedOperation($"UpdateVisibleFiles; scope='{node.FullPath}'; nodeFiles={node.FileCount}", AppLogLevel.Debug);
-        _fileDetails.Clear();
-
         var snapshot = ScanViewBuilder.BuildVisibleFileDetails(node, _allFilesSorted);
-        foreach (var row in snapshot.Rows)
-        {
-            _fileDetails.Add(row);
-        }
+        _fileDetails.ReplaceAll(snapshot.Rows);
 
         FileDetailsSummaryTextBlock.Text = snapshot.SummaryText;
         _logger.Info($"File details populated; scope='{node.FullPath}', groupCount={snapshot.GroupCount}, visibleRows={_fileDetails.Count}, nodeFiles={node.FileCount}");

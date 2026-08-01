@@ -6,6 +6,29 @@ namespace EverythingDiskUsage.Tests.Services;
 public sealed class ScanViewBuilderTests
 {
     [Fact]
+    public void BuildInitialScanViewSnapshot_PreparesSortedBulkResults()
+    {
+        var rootPath = NewRootPath();
+        var files = new[]
+        {
+            TestData.File(rootPath, "a\\duplicate.bin", 100),
+            TestData.File(rootPath, "b\\duplicate.bin", 100),
+            TestData.File(rootPath, "b\\unique.bin", 50)
+        };
+        var root = ScanViewBuilder.BuildRootFromFiles(rootPath, files);
+
+        var snapshot = ScanViewBuilder.BuildInitialScanViewSnapshot(root, files);
+
+        Assert.Equal(["duplicate.bin", "duplicate.bin", "unique.bin"], snapshot.Files.Select(file => file.Name));
+        Assert.Equal(3, snapshot.Directories.Count);
+        Assert.Same(root, snapshot.Directories[0]);
+        Assert.Equal(2, snapshot.FileDetails.GroupCount);
+        Assert.Equal(4, snapshot.FileDetails.Rows.Count);
+        Assert.Equal(1, snapshot.Duplicates.TotalGroups);
+        Assert.Equal(3, snapshot.Duplicates.Rows.Count);
+    }
+
+    [Fact]
     public void BuildDuplicateSnapshot_GroupsSameNameAndSizeCaseInsensitively()
     {
         var rootPath = NewRootPath();

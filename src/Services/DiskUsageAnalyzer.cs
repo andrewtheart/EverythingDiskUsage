@@ -12,30 +12,41 @@ public sealed record ScanResult(DirectoryUsageNode Root, IReadOnlyList<FileUsage
 
 public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
 {
-    private const uint SdkResultBatchSize = 2000;
+    private const uint ResultProcessingBatchSize = 2000;
+    private const uint QueryProbeResultCount = 1;
     private const int FileProgressLogInterval = 10_000;
     private const int InitialFileSampleLogCount = 10;
     private readonly IAppLogger _logger;
-
-    private delegate bool ResultFileTimeGetter(uint index, out long fileTime);
+    private readonly IEverythingSdkOperations _sdk;
 
     public DiskUsageAnalyzer()
-        : this(new AppLoggerAdapter())
+        : this(new AppLoggerAdapter(), new EverythingSdkOperations())
     {
     }
 
     public DiskUsageAnalyzer(IAppLogger logger)
+        : this(logger, new EverythingSdkOperations())
+    {
+    }
+
+    internal DiskUsageAnalyzer(IAppLogger logger, IEverythingSdkOperations sdk)
     {
         _logger = logger;
+        _sdk = sdk;
     }
 
     public Task<ScanResult> ScanAsync(string rootPath, IProgress<ScanProgress>? progress, CancellationToken cancellationToken)
     {
         _logger.Info($"DiskUsageAnalyzer.ScanAsync requested; rootPath='{rootPath}', cancellationRequested={cancellationToken.IsCancellationRequested}");
-        return Task.Run(() => ScanCore(rootPath, progress, cancellationToken, _logger), cancellationToken);
+        return Task.Run(() => ScanCore(rootPath, progress, cancellationToken, _logger, _sdk), cancellationToken);
     }
 
-    private static ScanResult ScanCore(string rootPath, IProgress<ScanProgress>? progress, CancellationToken cancellationToken, IAppLogger logger)
+    private static ScanResult ScanCore(
+        string rootPath,
+        IProgress<ScanProgress>? progress,
+        CancellationToken cancellationToken,
+        IAppLogger logger,
+        IEverythingSdkOperations sdk)
     {
         var scanId = Guid.NewGuid().ToString("N")[..8];
         var stopwatch = Stopwatch.StartNew();
@@ -50,8 +61,6 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
         long outsideRootSkipped = 0;
         long invalidDirectorySkipped = 0;
         long missingSizeCount = 0;
-        long missingModifiedDateCount = 0;
-        long missingAccessedDateCount = 0;
         long zeroSizeCount = 0;
         var lastProcessingLog = Stopwatch.StartNew();
 
@@ -60,7 +69,7 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
         var sdkLockWait = Stopwatch.StartNew();
         logger.Debug($"[{scanId}] Waiting for Everything SDK lock");
 
-        lock (EverythingSdk.Lock)
+        lock (sdk.SyncRoot)
         {
             sdkLockWait.Stop();
             logger.Debug($"[{scanId}] Everything SDK lock acquired; waitMs={sdkLockWait.ElapsedMilliseconds}");
@@ -68,7 +77,7 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
             try
             {
                 logger.Debug($"[{scanId}] SDK call: Everything_IsDBLoaded starting");
-                if (!EverythingSdk.IsDBLoaded())
+                if (!sdk.IsDBLoaded())
                 {
                     logger.Warning($"[{scanId}] SDK call: Everything_IsDBLoaded returned false");
                     throw new InvalidOperationException("Everything database is not loaded. Start Everything Search and wait for indexing to finish.");
@@ -76,193 +85,169 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
                 logger.Debug($"[{scanId}] SDK call: Everything_IsDBLoaded returned true");
 
                 logger.Debug($"[{scanId}] SDK call: Everything_Reset before query starting");
-                EverythingSdk.Reset();
+                sdk.Reset();
                 logger.Debug($"[{scanId}] SDK call: Everything_Reset before query completed");
 
                 var query = BuildQuery(normalizedRoot, logger);
                 var requestFlags =
                     EverythingSdk.EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME |
-                    EverythingSdk.EVERYTHING_REQUEST_SIZE |
-                    EverythingSdk.EVERYTHING_REQUEST_DATE_MODIFIED |
-                    EverythingSdk.EVERYTHING_REQUEST_DATE_ACCESSED;
+                    EverythingSdk.EVERYTHING_REQUEST_SIZE;
 
-                logger.Info($"[{scanId}] SDK query configuration; query='{query}', requestFlags={requestFlags} ({DescribeRequestFlags(requestFlags)}), matchPath=true, matchCase=false, batchSize={SdkResultBatchSize}");
+                logger.Info($"[{scanId}] SDK query configuration; query='{query}', requestFlags={requestFlags} ({DescribeRequestFlags(requestFlags)}), matchPath=true, matchCase=false, processingBatchSize={ResultProcessingBatchSize}");
 
                 logger.Debug($"[{scanId}] SDK call: Everything_SetSearch starting");
-                EverythingSdk.SetSearch(query);
+                sdk.SetSearch(query);
                 logger.Debug($"[{scanId}] SDK call: Everything_SetSearch completed");
 
                 logger.Debug($"[{scanId}] SDK call: Everything_SetMatchPath(true) starting");
-                EverythingSdk.SetMatchPath(true);
+                sdk.SetMatchPath(true);
                 logger.Debug($"[{scanId}] SDK call: Everything_SetMatchPath(true) completed");
 
                 logger.Debug($"[{scanId}] SDK call: Everything_SetMatchCase(false) starting");
-                EverythingSdk.SetMatchCase(false);
+                sdk.SetMatchCase(false);
                 logger.Debug($"[{scanId}] SDK call: Everything_SetMatchCase(false) completed");
 
                 logger.Debug($"[{scanId}] SDK call: Everything_SetRequestFlags starting; flags={requestFlags}");
-                EverythingSdk.SetRequestFlags(requestFlags);
+                sdk.SetRequestFlags(requestFlags);
                 logger.Debug($"[{scanId}] SDK call: Everything_SetRequestFlags completed");
 
-                var buffer = new StringBuilder(1024);
-                var lastProgress = Stopwatch.StartNew();
-                var batchOffset = 0u;
-                var batchNumber = 0;
+                sdk.SetOffset(0);
+                sdk.SetMax(QueryProbeResultCount);
 
-                while (true)
+                var probeStopwatch = Stopwatch.StartNew();
+                logger.Debug($"[{scanId}] SDK count probe starting; max={QueryProbeResultCount}");
+                if (!sdk.Query(wait: true))
+                {
+                    probeStopwatch.Stop();
+                    var errorCode = sdk.GetLastError();
+                    logger.Error($"[{scanId}] SDK count probe failed; elapsedMs={probeStopwatch.ElapsedMilliseconds}; errorCode={errorCode}; errorMessage='{sdk.ErrorMessage(errorCode)}'");
+                    throw new InvalidOperationException($"Everything SDK query failed: {sdk.ErrorMessage(errorCode)}");
+                }
+                probeStopwatch.Stop();
+
+                totalResults = sdk.GetTotResults();
+                logger.Info($"[{scanId}] SDK count probe completed; totalMatches={totalResults}; elapsedMs={probeStopwatch.ElapsedMilliseconds}");
+                progress?.Report(new ScanProgress(filesProcessed, totalResults, bytesProcessed));
+
+                if (totalResults == 0)
+                {
+                    logger.Info($"[{scanId}] SDK query returned no matches");
+                }
+                else
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    batchNumber++;
-                    logger.Debug($"[{scanId}] SDK call: Everything_SetOffset({batchOffset}) starting; batch={batchNumber}");
-                    EverythingSdk.SetOffset(batchOffset);
-                    logger.Debug($"[{scanId}] SDK call: Everything_SetOffset({batchOffset}) completed; batch={batchNumber}");
-
-                    logger.Debug($"[{scanId}] SDK call: Everything_SetMax({SdkResultBatchSize}) starting; batch={batchNumber}");
-                    EverythingSdk.SetMax(SdkResultBatchSize);
-                    logger.Debug($"[{scanId}] SDK call: Everything_SetMax({SdkResultBatchSize}) completed; batch={batchNumber}");
+                    sdk.SetOffset(0);
+                    sdk.SetMax(checked((uint)totalResults));
 
                     var sdkQueryStopwatch = Stopwatch.StartNew();
-                    logger.Debug($"[{scanId}] SDK call: Everything_Query(bWait=true) starting; batch={batchNumber}; offset={batchOffset}; max={SdkResultBatchSize}");
-                    if (!EverythingSdk.Query(bWait: true))
+                    logger.Info($"[{scanId}] SDK full-result query starting; max={totalResults}");
+                    if (!sdk.Query(wait: true))
                     {
                         sdkQueryStopwatch.Stop();
-                        var errorCode = EverythingSdk.GetLastError();
-                        logger.Error($"[{scanId}] SDK call: Everything_Query failed; batch={batchNumber}; offset={batchOffset}; elapsedMs={sdkQueryStopwatch.ElapsedMilliseconds}; errorCode={errorCode}; errorMessage='{EverythingSdk.ErrorMessage(errorCode)}'");
-                        throw new InvalidOperationException($"Everything SDK query failed: {EverythingSdk.ErrorMessage(errorCode)}");
+                        var errorCode = sdk.GetLastError();
+                        logger.Error($"[{scanId}] SDK full-result query failed; elapsedMs={sdkQueryStopwatch.ElapsedMilliseconds}; errorCode={errorCode}; errorMessage='{sdk.ErrorMessage(errorCode)}'");
+                        throw new InvalidOperationException($"Everything SDK query failed: {sdk.ErrorMessage(errorCode)}");
                     }
                     sdkQueryStopwatch.Stop();
 
-                    var batchResultCount = EverythingSdk.GetNumResults();
-                    var totalMatches = EverythingSdk.GetTotResults();
-                    if (totalMatches > 0)
-                    {
-                        totalResults = totalMatches;
-                    }
+                    var resultCount = sdk.GetNumResults();
+                    totalResults = sdk.GetTotResults();
+                    logger.Info($"[{scanId}] SDK full-result query completed; returnedResults={resultCount}; totalMatches={totalResults}; elapsedMs={sdkQueryStopwatch.ElapsedMilliseconds}");
 
-                    logger.Debug($"[{scanId}] SDK call: Everything_Query succeeded; batch={batchNumber}; offset={batchOffset}; elapsedMs={sdkQueryStopwatch.ElapsedMilliseconds}; batchResults={batchResultCount}; totalMatches={totalMatches}");
-                    progress?.Report(new ScanProgress(filesProcessed, totalResults, bytesProcessed));
+                    var buffer = new StringBuilder(1024);
+                    var lastProgress = Stopwatch.StartNew();
+                    var batchNumber = 0;
 
-                    if (batchNumber == 1)
-                    {
-                        logger.Debug($"[{scanId}] Initial progress reported; totalMatches={totalMatches}");
-                    }
-
-                    if (batchResultCount == 0)
-                    {
-                        logger.Info($"[{scanId}] No SDK results returned for batch; ending scan loop; batch={batchNumber}; offset={batchOffset}; totalMatches={totalMatches}");
-                        break;
-                    }
-
-                    for (uint index = 0; index < batchResultCount; index++)
+                    for (var batchOffset = 0u; batchOffset < resultCount; batchOffset += ResultProcessingBatchSize)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var absoluteIndex = batchOffset + index;
 
-                        if (!EverythingSdk.IsFileResult(index))
-                        {
-                            nonFileResultsSkipped++;
-                            continue;
-                        }
+                        batchNumber++;
+                        var batchEnd = Math.Min(resultCount, batchOffset + ResultProcessingBatchSize);
 
-                        buffer.Clear();
-                        var pathLength = EverythingSdk.GetResultFullPathName(index, buffer, (uint)buffer.Capacity);
-                        if (pathLength == 0)
+                        for (var index = batchOffset; index < batchEnd; index++)
                         {
-                            pathReadFailures++;
-                            logger.Warning($"[{scanId}] SDK result skipped because Everything_GetResultFullPathName returned 0; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}");
-                            continue;
-                        }
+                            cancellationToken.ThrowIfCancellationRequested();
+                            var absoluteIndex = index;
 
-                        if (pathLength >= buffer.Capacity)
-                        {
-                            var previousCapacity = buffer.Capacity;
-                            buffer.Capacity = checked((int)pathLength + 1);
-                            buffer.Clear();
-                            EverythingSdk.GetResultFullPathName(index, buffer, (uint)buffer.Capacity);
-                            logger.Debug($"[{scanId}] Path buffer resized; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; previousCapacity={previousCapacity}; requestedLength={pathLength}; newCapacity={buffer.Capacity}");
-                        }
-
-                        var filePath = buffer.ToString();
-                        if (!IsInsideRoot(filePath, normalizedRoot))
-                        {
-                            outsideRootSkipped++;
-                            if (outsideRootSkipped <= 20)
+                            if (!sdk.IsFileResult(index))
                             {
-                                logger.Warning($"[{scanId}] SDK result skipped because it is outside normalized root; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; path='{filePath}'");
+                                nonFileResultsSkipped++;
+                                continue;
                             }
-                            continue;
-                        }
 
-                        var hasSize = EverythingSdk.GetResultSize(index, out var sdkSizeBytes);
-                        if (!hasSize)
-                        {
-                            missingSizeCount++;
-                        }
+                            buffer.Clear();
+                            var pathLength = sdk.GetResultFullPathName(index, buffer, (uint)buffer.Capacity);
+                            if (pathLength == 0)
+                            {
+                                pathReadFailures++;
+                                logger.Warning($"[{scanId}] SDK result skipped because Everything_GetResultFullPathName returned 0; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}");
+                                continue;
+                            }
 
-                        var sizeBytes = hasSize ? Math.Max(0, sdkSizeBytes) : 0;
-                        if (sizeBytes == 0)
-                        {
-                            zeroSizeCount++;
-                        }
+                            if (pathLength >= buffer.Capacity)
+                            {
+                                var previousCapacity = buffer.Capacity;
+                                buffer.Capacity = checked((int)pathLength + 1);
+                                buffer.Clear();
+                                sdk.GetResultFullPathName(index, buffer, (uint)buffer.Capacity);
+                                logger.Debug($"[{scanId}] Path buffer resized; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; previousCapacity={previousCapacity}; requestedLength={pathLength}; newCapacity={buffer.Capacity}");
+                            }
 
-                        var lastModifiedUtc = GetResultDateUtc(index, EverythingSdk.GetResultDateModified, logger);
-                        var lastAccessedUtc = GetResultDateUtc(index, EverythingSdk.GetResultDateAccessed, logger);
-                        if (lastModifiedUtc is null)
-                        {
-                            missingModifiedDateCount++;
-                        }
+                            var filePath = buffer.ToString();
+                            if (!IsInsideRoot(filePath, normalizedRoot))
+                            {
+                                outsideRootSkipped++;
+                                if (outsideRootSkipped <= 20)
+                                {
+                                    logger.Warning($"[{scanId}] SDK result skipped because it is outside normalized root; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; path='{filePath}'");
+                                }
+                                continue;
+                            }
 
-                        if (lastAccessedUtc is null)
-                        {
-                            missingAccessedDateCount++;
-                        }
+                            var hasSize = sdk.GetResultSize(index, out var sdkSizeBytes);
+                            if (!hasSize)
+                            {
+                                missingSizeCount++;
+                            }
 
-                        if (!TryAddFile(root, normalizedRoot, filePath, sizeBytes, lastModifiedUtc, lastAccessedUtc, out var fileItem, logger))
-                        {
-                            invalidDirectorySkipped++;
-                            logger.Warning($"[{scanId}] File skipped because directory could not be resolved; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; path='{filePath}'");
-                            continue;
-                        }
+                            var sizeBytes = hasSize ? Math.Max(0, sdkSizeBytes) : 0;
+                            if (sizeBytes == 0)
+                            {
+                                zeroSizeCount++;
+                            }
 
-                        files.Add(fileItem);
-                        filesProcessed++;
-                        bytesProcessed += sizeBytes;
+                            if (!TryAddFile(root, normalizedRoot, filePath, sizeBytes, out var fileItem, logger))
+                            {
+                                invalidDirectorySkipped++;
+                                logger.Warning($"[{scanId}] File skipped because directory could not be resolved; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; path='{filePath}'");
+                                continue;
+                            }
 
-                        if (ShouldLogFileResult(filesProcessed, logger))
-                        {
-                            logger.Trace($"[{scanId}] File accepted; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; filesProcessed={filesProcessed}; sizeBytes={sizeBytes}; lastModifiedUtc='{FormatUtc(lastModifiedUtc)}'; lastAccessedUtc='{FormatUtc(lastAccessedUtc)}'; path='{filePath}'");
-                        }
+                            files.Add(fileItem);
+                            filesProcessed++;
+                            bytesProcessed += sizeBytes;
 
-                        if (filesProcessed % FileProgressLogInterval == 0 || lastProcessingLog.ElapsedMilliseconds >= 5000)
-                        {
-                            logger.Info($"[{scanId}] SDK result processing progress; batch={batchNumber}; absoluteIndex={absoluteIndex}; totalResults={totalResults}; filesProcessed={filesProcessed}; bytesProcessed={bytesProcessed}; elapsedMs={stopwatch.ElapsedMilliseconds}; skippedNonFiles={nonFileResultsSkipped}; skippedOutsideRoot={outsideRootSkipped}; pathReadFailures={pathReadFailures}");
-                            lastProcessingLog.Restart();
-                        }
+                            if (ShouldLogFileResult(filesProcessed, logger))
+                            {
+                                logger.Trace($"[{scanId}] File accepted; batch={batchNumber}; batchIndex={index}; absoluteIndex={absoluteIndex}; filesProcessed={filesProcessed}; sizeBytes={sizeBytes}; path='{filePath}'");
+                            }
 
-                        if (filesProcessed % 2000 == 0 || lastProgress.ElapsedMilliseconds >= 250)
-                        {
-                            progress?.Report(new ScanProgress(filesProcessed, totalResults, bytesProcessed));
-                            lastProgress.Restart();
+                            if (filesProcessed % FileProgressLogInterval == 0 || lastProcessingLog.ElapsedMilliseconds >= 5000)
+                            {
+                                logger.Info($"[{scanId}] SDK result processing progress; batch={batchNumber}; absoluteIndex={absoluteIndex}; totalResults={totalResults}; filesProcessed={filesProcessed}; bytesProcessed={bytesProcessed}; elapsedMs={stopwatch.ElapsedMilliseconds}; skippedNonFiles={nonFileResultsSkipped}; skippedOutsideRoot={outsideRootSkipped}; pathReadFailures={pathReadFailures}");
+                                lastProcessingLog.Restart();
+                            }
+
+                            if (filesProcessed % 2000 == 0 || lastProgress.ElapsedMilliseconds >= 250)
+                            {
+                                progress?.Report(new ScanProgress(filesProcessed, totalResults, bytesProcessed));
+                                lastProgress.Restart();
+                            }
                         }
                     }
-
-                    var nextOffset = batchOffset + batchResultCount;
-                    if (totalResults > 0 && nextOffset >= totalResults)
-                    {
-                        logger.Debug($"[{scanId}] Last SDK batch reached total match count; batch={batchNumber}; nextOffset={nextOffset}; totalMatches={totalResults}");
-                        break;
-                    }
-
-                    if (batchResultCount < SdkResultBatchSize)
-                    {
-                        logger.Debug($"[{scanId}] SDK batch returned fewer results than max; ending scan loop; batch={batchNumber}; batchResults={batchResultCount}; batchSize={SdkResultBatchSize}");
-                        break;
-                    }
-
-                    batchOffset = nextOffset;
                 }
-                logger.Info($"[{scanId}] SDK result loop completed; totalResults={totalResults}; filesProcessed={filesProcessed}; bytesProcessed={bytesProcessed}; skippedNonFiles={nonFileResultsSkipped}; pathReadFailures={pathReadFailures}; skippedOutsideRoot={outsideRootSkipped}; invalidDirectorySkipped={invalidDirectorySkipped}; missingSize={missingSizeCount}; zeroSize={zeroSizeCount}; missingModifiedDate={missingModifiedDateCount}; missingAccessedDate={missingAccessedDateCount}");
+                logger.Info($"[{scanId}] SDK result loop completed; totalResults={totalResults}; filesProcessed={filesProcessed}; bytesProcessed={bytesProcessed}; skippedNonFiles={nonFileResultsSkipped}; pathReadFailures={pathReadFailures}; skippedOutsideRoot={outsideRootSkipped}; invalidDirectorySkipped={invalidDirectorySkipped}; missingSize={missingSizeCount}; zeroSize={zeroSizeCount}");
             }
             catch (OperationCanceledException)
             {
@@ -281,7 +266,7 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
             }
             finally
             {
-                TryResetSdk(scanId, logger);
+                TryResetSdk(scanId, logger, sdk);
                 logger.Debug($"[{scanId}] Everything SDK lock scope exiting");
             }
         }
@@ -314,8 +299,6 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
         string normalizedRoot,
         string filePath,
         long sizeBytes,
-        DateTime? lastModifiedUtc,
-        DateTime? lastAccessedUtc,
         out FileUsageItem fileItem,
         IAppLogger logger)
     {
@@ -327,7 +310,7 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
             return false;
         }
 
-        root.AddAggregateFile(sizeBytes, lastModifiedUtc, lastAccessedUtc);
+        root.AddAggregateFile(sizeBytes, lastModifiedUtc: null, lastAccessedUtc: null);
         var relativeDirectory = Path.GetRelativePath(normalizedRoot, directory);
         var current = root;
 
@@ -337,7 +320,7 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
             {
                 var childPath = Path.Combine(current.FullPath, part);
                 current = current.GetOrAddChild(part, childPath);
-                current.AddAggregateFile(sizeBytes, lastModifiedUtc, lastAccessedUtc);
+                current.AddAggregateFile(sizeBytes, lastModifiedUtc: null, lastAccessedUtc: null);
             }
         }
 
@@ -347,27 +330,9 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
             filePath,
             directory,
             sizeBytes,
-            lastModifiedUtc,
-            lastAccessedUtc);
+            LastModifiedUtc: null,
+            LastAccessedUtc: null);
         return true;
-    }
-
-    private static DateTime? GetResultDateUtc(uint index, ResultFileTimeGetter getter, IAppLogger logger)
-    {
-        if (!getter(index, out var fileTime) || fileTime <= 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            return DateTime.FromFileTimeUtc(fileTime);
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            logger.Warning($"SDK date conversion failed because file time was out of range; resultIndex={index}; fileTime={fileTime}");
-            return null;
-        }
     }
 
     private static bool IsInsideRoot(string filePath, string normalizedRoot)
@@ -397,12 +362,12 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
         return displayName;
     }
 
-    private static void TryResetSdk(string scanId, IAppLogger logger)
+    private static void TryResetSdk(string scanId, IAppLogger logger, IEverythingSdkOperations sdk)
     {
         try
         {
             logger.Debug($"[{scanId}] SDK cleanup: Everything_Reset starting");
-            EverythingSdk.Reset();
+            sdk.Reset();
             logger.Debug($"[{scanId}] SDK cleanup: Everything_Reset completed");
         }
         catch (Exception ex)
@@ -442,8 +407,4 @@ public sealed class DiskUsageAnalyzer : IDiskUsageAnalyzer
         return string.Join(",", flags);
     }
 
-    private static string FormatUtc(DateTime? dateTimeUtc)
-    {
-        return dateTimeUtc is null ? string.Empty : dateTimeUtc.Value.ToString("O");
-    }
 }
