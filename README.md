@@ -142,7 +142,7 @@ Set `EVERYTHING_DISK_USAGE_LOG_EACH_FILE=1` before launching the app to log ever
 
 ```powershell
 cd D:\EverythingDiskUsage
-dotnet run --project .\EverythingDiskUsage.csproj
+dotnet run --project .\src\EverythingDiskUsage.csproj
 ```
 
 Everything Search must still be installed, running, and indexed. The app includes `Everything64.dll` in the repository and copies it beside the executable during build.
@@ -153,19 +153,19 @@ Build a Debug binary:
 
 ```powershell
 cd D:\EverythingDiskUsage
-dotnet build .\EverythingDiskUsage.csproj -c Debug
+dotnet build .\src\EverythingDiskUsage.csproj -c Debug
 ```
 
 Build a Release binary:
 
 ```powershell
-dotnet build .\EverythingDiskUsage.csproj -c Release
+dotnet build .\src\EverythingDiskUsage.csproj -c Release
 ```
 
 The normal build output is written under:
 
 ```text
-bin\<Configuration>\net10.0-windows\
+src\bin\<Configuration>\net10.0-windows\
 ```
 
 ## Rebuild The Installer
@@ -173,7 +173,7 @@ bin\<Configuration>\net10.0-windows\
 Create a self-contained Windows x64 publish output and rebuild the Inno Setup installer:
 
 ```powershell
-dotnet publish .\EverythingDiskUsage.csproj -c Release -r win-x64 --self-contained -o .\artifacts\publish
+dotnet publish .\src\EverythingDiskUsage.csproj -c Release -r win-x64 --self-contained -o .\artifacts\publish
 ```
 
 If Inno Setup 6 is installed machine-wide, `dotnet publish` builds the installer automatically at:
@@ -191,8 +191,32 @@ Copy-Item .\installer-output\EverythingDiskUsage-Setup-1.0.0.exe .\downloads\Eve
 If `ISCC.exe` is installed somewhere non-standard, pass its path explicitly:
 
 ```powershell
-dotnet publish .\EverythingDiskUsage.csproj -c Release -r win-x64 --self-contained -o .\artifacts\publish /p:IsccPath="C:\Path\To\ISCC.exe"
+dotnet publish .\src\EverythingDiskUsage.csproj -c Release -r win-x64 --self-contained -o .\artifacts\publish /p:IsccPath="C:\Path\To\ISCC.exe"
 ```
+
+## Publish A GitHub Release
+
+Build the installer without committing or publishing:
+
+```powershell
+.\scripts\build-all-installers.ps1 -Version 1.0.0
+```
+
+Preview the complete release plan without changing files:
+
+```powershell
+.\scripts\build-all-installers.ps1 -Push -ReleaseMode Published -WhatIf
+```
+
+Build the next patch version, commit all pending repository changes, push the
+current branch, and publish the GitHub release:
+
+```powershell
+.\scripts\build-all-installers.ps1 -Push -ReleaseMode Published
+```
+
+Omit `-ReleaseMode Published` to choose interactively between a draft and a
+published release. The script requires GitHub CLI (`gh`) for release creation.
 
 ## Tests
 
