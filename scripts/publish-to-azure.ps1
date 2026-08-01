@@ -47,7 +47,7 @@ function Invoke-WithRetry {
 }
 
 $root = $PSScriptRoot | Split-Path -Parent
-$projectPath = Join-Path $root "EverythingDiskUsage.csproj"
+$projectPath = Join-Path $root "src\EverythingDiskUsage.csproj"
 $projectXml = [xml](Get-Content -LiteralPath $projectPath -Raw)
 
 $appTitle = "Everything Disk Usage"

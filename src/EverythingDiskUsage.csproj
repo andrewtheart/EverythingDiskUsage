@@ -18,13 +18,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="Tests\**\*.cs" />
-    <EmbeddedResource Remove="Tests\**\*" />
-    <None Remove="Tests\**\*" />
-    <Page Remove="Tests\**\*.xaml" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
   </ItemGroup>
 
@@ -41,9 +34,10 @@
       <_IsccPath Condition="'$(_IsccPath)' == '' And Exists('C:\Program Files\Inno Setup 6\ISCC.exe')">C:\Program Files\Inno Setup 6\ISCC.exe</_IsccPath>
       <!-- Allow the caller to supply a custom path: /p:IsccPath="..." -->
       <_IsccPath Condition="'$(IsccPath)' != ''">$(IsccPath)</_IsccPath>
+      <_RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..'))</_RepoRoot>
       <!-- Output folder lives in the repo root, not in the temp publish dir. -->
-      <_InstallerOutputDir>$(MSBuildProjectDirectory)\installer-output</_InstallerOutputDir>
-      <_InstallerIss>$(MSBuildProjectDirectory)\installer\installer.iss</_InstallerIss>
+      <_InstallerOutputDir>$(_RepoRoot)\installer-output</_InstallerOutputDir>
+      <_InstallerIss>$(_RepoRoot)\installer\installer.iss</_InstallerIss>
       <!-- Resolve PublishDir to an absolute path, then strip any trailing slash so Inno Setup Source globs resolve correctly. -->
       <_PublishDirFull Condition="$([System.IO.Path]::IsPathRooted('$(PublishDir)'))">$(PublishDir)</_PublishDirFull>
       <_PublishDirFull Condition="'$(_PublishDirFull)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\$(PublishDir)'))</_PublishDirFull>
@@ -57,8 +51,8 @@
 
     <MakeDir Directories="$(_InstallerOutputDir)" Condition="'$(_IsccPath)' != ''" />
 
-    <Exec Command="&quot;$(_IsccPath)&quot; &quot;/DPublishDir=$(_PublishDirTrimmed)&quot; &quot;/DAppVersion=$(_InstallerVersion)&quot; &quot;/DOutputDir=$(_InstallerOutputDir)&quot; &quot;$(_InstallerIss)&quot;"
-          WorkingDirectory="$(MSBuildProjectDirectory)\installer"
+        <Exec Command="&quot;$(_IsccPath)&quot; &quot;/DPublishDir=$(_PublishDirTrimmed)&quot; &quot;/DAppVersion=$(_InstallerVersion)&quot; &quot;/DOutputDir=$(_InstallerOutputDir)&quot; &quot;$(_InstallerIss)&quot;"
+          WorkingDirectory="$(_RepoRoot)\installer"
           Condition="'$(_IsccPath)' != ''" />
   </Target>
 

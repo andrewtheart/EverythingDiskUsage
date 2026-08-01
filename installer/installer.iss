@@ -47,7 +47,7 @@ ArchitecturesInstallIn64BitMode=x64os
 ; Offer to close the app if it is already running before overwriting files.
 CloseApplications=yes
 
-SetupIconFile=..\Assets\AppIcon.ico
+SetupIconFile=..\src\Assets\AppIcon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 AllowNoIcons=yes
 

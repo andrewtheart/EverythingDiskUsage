@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\EverythingDiskUsage.csproj" />
+    <ProjectReference Include="..\..\src\EverythingDiskUsage.csproj" />
   </ItemGroup>
 
 </Project>
