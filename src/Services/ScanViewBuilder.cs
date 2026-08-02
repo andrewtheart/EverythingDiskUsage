@@ -13,6 +13,7 @@ public enum ShellItemKind
 
 public sealed record DuplicateRowsSnapshot(
     IReadOnlyList<DuplicateFileRow> Rows,
+    IReadOnlyDictionary<string, IReadOnlyList<FileUsageItem>> FilesByDuplicateKey,
     int SourceFileCount,
     int TotalGroups,
     long TotalWastedBytes,
@@ -244,7 +245,13 @@ public static class ScanViewBuilder
         var rows = new List<DuplicateFileRow>();
         if (files.Count == 0)
         {
-            return new DuplicateRowsSnapshot(rows, files.Count, TotalGroups: 0, TotalWastedBytes: 0L, MaxDuplicateGroups);
+            return new DuplicateRowsSnapshot(
+                rows,
+                new Dictionary<string, IReadOnlyList<FileUsageItem>>(StringComparer.Ordinal),
+                files.Count,
+                TotalGroups: 0,
+                TotalWastedBytes: 0L,
+                MaxDuplicateGroups);
         }
 
         var allGroups = files
@@ -268,32 +275,60 @@ public static class ScanViewBuilder
 
         var totalGroups = allGroups.Count;
         var totalWasted = allGroups.Sum(g => g.WastedBytes);
+        var filesByDuplicateKey = new Dictionary<string, IReadOnlyList<FileUsageItem>>(StringComparer.Ordinal);
 
         foreach (var group in allGroups.Take(MaxDuplicateGroups))
         {
-            rows.Add(new DuplicateFileRow(
-                group.Name,
-                $"{group.Files.Count} copies",
-                ShellItemPath: null,
-                group.Files.Count,
-                group.SizeBytes,
-                group.WastedBytes,
-                IsGroup: true));
+            var duplicateKey = BuildDuplicateKey(group.Name, group.SizeBytes);
+            filesByDuplicateKey[duplicateKey] = group.Files;
 
             foreach (var file in group.Files)
             {
                 rows.Add(new DuplicateFileRow(
+                    duplicateKey,
                     file.Name,
                     file.DirectoryPath,
                     file.FullPath,
-                    CopyCount: 1,
+                    group.Files.Count,
                     file.SizeBytes,
-                    WastedBytes: 0L,
-                    IsGroup: false));
+                    group.WastedBytes));
             }
         }
 
-        return new DuplicateRowsSnapshot(rows, files.Count, totalGroups, totalWasted, MaxDuplicateGroups);
+        return new DuplicateRowsSnapshot(rows, filesByDuplicateKey, files.Count, totalGroups, totalWasted, MaxDuplicateGroups);
+    }
+
+    public static string GetAncestorFolderPath(string directoryPath, int levelsUp)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+        {
+            return string.Empty;
+        }
+
+        var root = Path.GetPathRoot(directoryPath);
+        if (levelsUp == int.MaxValue)
+        {
+            return root ?? directoryPath;
+        }
+
+        var current = directoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!string.IsNullOrWhiteSpace(root) &&
+            current.Equals(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        {
+            return root;
+        }
+
+        for (var level = 0; level < Math.Max(0, levelsUp); level++)
+        {
+            current = Directory.GetParent(current)?.FullName ?? root ?? current;
+        }
+
+        return current;
+    }
+
+    private static string BuildDuplicateKey(string name, long sizeBytes)
+    {
+        return $"{name.ToUpperInvariant()}\0{sizeBytes}";
     }
 
     public static string GetDuplicateSummaryText(DuplicateRowsSnapshot snapshot)

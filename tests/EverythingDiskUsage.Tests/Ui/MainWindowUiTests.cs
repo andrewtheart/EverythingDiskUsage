@@ -1,5 +1,6 @@
 using EverythingDiskUsage.Models;
 using EverythingDiskUsage.Services;
+using EverythingDiskUsage.Services.Foundry;
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
@@ -20,6 +21,10 @@ public sealed class MainWindowUiTests
                 Assert.True(window.LogEachSdkFileCheckBox.IsChecked);
                 Assert.True(window.LogToDebugOutputCheckBox.IsChecked);
                 Assert.Equal("12", window.RetainedLogFilesTextBox.Text);
+                Assert.False(window.FoundryEnabledCheckBox.IsChecked);
+                Assert.Equal("120", window.FoundryTimeoutTextBox.Text);
+                Assert.Equal("Duplicate set", window.DuplicateGroupingComboBox.Text);
+                Assert.False(window.AnalyzeDuplicateButton.IsEnabled);
                 Assert.Equal("◐", window.ThemeGlyphTextBlock.Text);
                 Assert.Contains("Theme: Auto", window.ThemeButton.ToolTip?.ToString(), StringComparison.Ordinal);
                 Assert.Equal("Ready", window.StatusTextBlock.Text);
@@ -144,7 +149,7 @@ public sealed class MainWindowUiTests
                 Assert.Single(window.UsageTree.Items);
                 Assert.Equal(3, window.DirectoryDetailsGrid.Items.Count);
                 Assert.Equal("1 group \u00b7 100 B wasted", window.DuplicatesSummaryTextBlock.Text);
-                Assert.Equal(3, window.DuplicatesGrid.Items.Count);
+                Assert.Equal(2, window.DuplicatesGrid.Items.Count);
                 Assert.Equal("No size data", window.EmptyPieTextBlock.Text);
                 Assert.NotNull(window.LegendItems.ItemsSource);
             }
@@ -187,6 +192,98 @@ public sealed class MainWindowUiTests
         });
     }
 
+    [Fact]
+    public void QualifiedFoundryModel_AnalyzesTheCompleteSelectedDuplicateSet()
+    {
+        WpfTestHost.Run(async () =>
+        {
+            using var temp = TempDirectory.Create();
+            var analyzer = new ControllableAnalyzer();
+            var foundry = new TestFoundryModelService();
+            var settings = new TestSettingsService(new AppSettings
+            {
+                FoundryEnabled = true,
+                FoundryModelAlias = "test-model",
+                FoundryQualifiedModelAlias = "test-model",
+                FoundryQualificationUtc = DateTimeOffset.UtcNow,
+                FoundryInferenceTimeoutSeconds = 120
+            });
+            var window = CreateWindow(analyzer, new TestLogger(), settings, foundry);
+            var result = TestData.ScanResultFromFiles(
+                temp.Path,
+                TestData.File(temp.Path, "one\\duplicate.bin", 100),
+                TestData.File(temp.Path, "two\\duplicate.bin", 100),
+                TestData.File(temp.Path, "one\\other.bin", 200),
+                TestData.File(temp.Path, "two\\other.bin", 200));
+
+            try
+            {
+                window.RootPathTextBox.Text = temp.Path;
+                Click(window.ScanButton);
+                await WpfTestHost.WaitUntilAsync(() => analyzer.Started.Task.IsCompleted);
+                analyzer.Complete(result);
+                await WpfTestHost.WaitUntilAsync(() => window.DuplicatesGrid.Items.Count == 4);
+
+                window.DuplicatesGrid.SelectedIndex = 0;
+                var selectedRow = Assert.IsType<DuplicateFileRow>(window.DuplicatesGrid.SelectedItem);
+                Assert.True(window.AnalyzeDuplicateButton.IsEnabled);
+                Click(window.AnalyzeDuplicateButton);
+
+                await WpfTestHost.WaitUntilAsync(() => window.DuplicateAdviceStatusTextBlock.Text.Contains("2 advisory", StringComparison.OrdinalIgnoreCase));
+                Assert.NotNull(foundry.LastRequest);
+                Assert.Equal(2, foundry.LastRequest.Candidates.Count);
+                Assert.Equal(2, window.DuplicateAdviceListBox.Items.Count);
+                Assert.Contains("canonical", window.DuplicateAdviceSummaryTextBlock.Text, StringComparison.OrdinalIgnoreCase);
+
+                window.DuplicatesGrid.SelectedItem = window.DuplicatesGrid.Items
+                    .OfType<DuplicateFileRow>()
+                    .First(row => !row.DuplicateKey.Equals(selectedRow.DuplicateKey, StringComparison.OrdinalIgnoreCase));
+                Assert.Empty(window.DuplicateAdviceListBox.Items);
+                Assert.Equal(string.Empty, window.DuplicateAdviceSummaryTextBlock.Text);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void UnqualifiedFoundryModel_AnalyzeButtonExplainsRequiredSetup()
+    {
+        WpfTestHost.Run(async () =>
+        {
+            using var temp = TempDirectory.Create();
+            var analyzer = new ControllableAnalyzer();
+            var window = CreateWindow(analyzer);
+            var result = TestData.ScanResultFromFiles(
+                temp.Path,
+                TestData.File(temp.Path, @"one\duplicate.bin", 100),
+                TestData.File(temp.Path, @"two\duplicate.bin", 100));
+
+            try
+            {
+                window.RootPathTextBox.Text = temp.Path;
+                Click(window.ScanButton);
+                await WpfTestHost.WaitUntilAsync(() => analyzer.Started.Task.IsCompleted);
+                analyzer.Complete(result);
+                await WpfTestHost.WaitUntilAsync(() => window.DuplicatesGrid.Items.Count == 2);
+
+                window.DuplicatesGrid.SelectedIndex = 0;
+                Assert.True(window.AnalyzeDuplicateButton.IsEnabled);
+                Click(window.AnalyzeDuplicateButton);
+
+                Assert.Equal(
+                    "Enable Foundry Local and qualify the selected model in Settings.",
+                    window.DuplicateAdviceStatusTextBlock.Text);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
     private static MainWindow CreateWindow(IDiskUsageAnalyzer analyzer)
     {
         return CreateWindow(analyzer, new TestLogger(), new TestSettingsService(new AppSettings
@@ -201,6 +298,15 @@ public sealed class MainWindowUiTests
     private static MainWindow CreateWindow(IDiskUsageAnalyzer analyzer, TestLogger logger, TestSettingsService settings)
     {
         return new MainWindow(analyzer, logger, settings, new TestShellContextMenuService(), configureNotifications: false);
+    }
+
+    private static MainWindow CreateWindow(
+        IDiskUsageAnalyzer analyzer,
+        TestLogger logger,
+        TestSettingsService settings,
+        IFoundryLocalModelService foundryModelService)
+    {
+        return new MainWindow(analyzer, logger, settings, new TestShellContextMenuService(), foundryModelService, configureNotifications: false);
     }
 
     private static void Click(ButtonBase button)

@@ -1,6 +1,7 @@
 using EverythingDiskUsage.Models;
 using EverythingDiskUsage.Native;
 using EverythingDiskUsage.Services;
+using EverythingDiskUsage.Services.Foundry;
 
 namespace EverythingDiskUsage.Tests;
 
@@ -174,4 +175,53 @@ internal static class TestData
         var root = ScanViewBuilder.BuildRootFromFiles(rootPath, sorted);
         return new ScanResult(root, sorted, sorted.Count, TimeSpan.FromSeconds(1.25));
     }
+}
+
+internal sealed class TestFoundryModelService : IFoundryLocalModelService
+{
+    public DuplicateRecommendationRequest? LastRequest { get; private set; }
+
+    public string? PreparedModel { get; private set; }
+
+    public Task<IReadOnlyList<FoundryModelOption>> ListModelsAsync(
+        IProgress<FoundryProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult<IReadOnlyList<FoundryModelOption>>(
+        [
+            new FoundryModelOption("test-model", "Test model", "test-model:1", 1024, true, true)
+        ]);
+    }
+
+    public Task PrepareModelAsync(
+        string modelAlias,
+        IProgress<FoundryProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        PreparedModel = modelAlias;
+        return Task.CompletedTask;
+    }
+
+    public Task<DuplicateRecommendationResult> RecommendAsync(
+        DuplicateRecommendationRequest request,
+        string modelAlias,
+        TimeSpan timeout,
+        IProgress<FoundryProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        LastRequest = request;
+        var decisions = request.Candidates.Select((candidate, index) =>
+            new DuplicateRecommendationDecision(
+                candidate.Path,
+                index == 0 ? DuplicateRecommendationAction.Keep : DuplicateRecommendationAction.DeleteCandidate,
+                0.9,
+                index == 0 ? "Canonical location." : "Secondary location.")).ToList();
+        return Task.FromResult(new DuplicateRecommendationResult(
+            modelAlias,
+            "One copy appears canonical.",
+            "Matched by name and size only; verify contents.",
+            decisions));
+    }
+
+    public Task ResetAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

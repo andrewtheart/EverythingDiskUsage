@@ -1,4 +1,11 @@
 <Solution>
+  <Folder Name="/artifacts/" />
+  <Folder Name="/artifacts/foundry-probe-harness/">
+    <Project Path="artifacts/foundry-probe-harness/FoundryProbeHarness.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/EverythingDiskUsage.FoundryWorker/EverythingDiskUsage.FoundryWorker.csproj" />
+  </Folder>
   <Folder Name="/Tests/" />
   <Project Path="src/EverythingDiskUsage.csproj" />
   <Project Path="tests/EverythingDiskUsage.Tests/EverythingDiskUsage.Tests.csproj" />

@@ -33,6 +33,31 @@ public sealed class AppSettingsTests
     }
 
     [Theory]
+    [InlineData(5, 30)]
+    [InlineData(120, 120)]
+    [InlineData(900, 600)]
+    public void Normalize_ClampsFoundryInferenceTimeout(int input, int expected)
+    {
+        var normalized = AppSettingsService.Normalize(new AppSettings { FoundryInferenceTimeoutSeconds = input });
+
+        Assert.Equal(expected, normalized.FoundryInferenceTimeoutSeconds);
+    }
+
+    [Fact]
+    public void Normalize_ClearsQualificationWhenSelectedModelChanges()
+    {
+        var normalized = AppSettingsService.Normalize(new AppSettings
+        {
+            FoundryModelAlias = "phi-4-mini",
+            FoundryQualifiedModelAlias = "phi-3.5-mini",
+            FoundryQualificationUtc = DateTimeOffset.UtcNow
+        });
+
+        Assert.Null(normalized.FoundryQualifiedModelAlias);
+        Assert.Null(normalized.FoundryQualificationUtc);
+    }
+
+    [Theory]
     [InlineData(AppThemeMode.Auto, AppThemeMode.Light)]
     [InlineData(AppThemeMode.Light, AppThemeMode.Dark)]
     [InlineData(AppThemeMode.Dark, AppThemeMode.Auto)]
@@ -60,7 +85,12 @@ public sealed class AppSettingsTests
             ThemeMode = AppThemeMode.Dark,
             LogEachSdkFile = true,
             LogToDebugOutput = true,
-            RetainedLogFiles = 7
+            RetainedLogFiles = 7,
+            FoundryEnabled = true,
+            FoundryModelAlias = "phi-4-mini",
+            FoundryInferenceTimeoutSeconds = 240,
+            FoundryQualifiedModelAlias = "phi-4-mini",
+            FoundryQualificationUtc = DateTimeOffset.UtcNow
         };
 
         var clone = original.Clone();
@@ -70,6 +100,11 @@ public sealed class AppSettingsTests
         Assert.Equal(AppThemeMode.Dark, clone.ThemeMode);
         Assert.True(clone.LogEachSdkFile);
         Assert.True(clone.LogToDebugOutput);
+        Assert.True(clone.FoundryEnabled);
+        Assert.Equal("phi-4-mini", clone.FoundryModelAlias);
+        Assert.Equal(240, clone.FoundryInferenceTimeoutSeconds);
+        Assert.Equal("phi-4-mini", clone.FoundryQualifiedModelAlias);
+        Assert.Equal(original.FoundryQualificationUtc, clone.FoundryQualificationUtc);
         Assert.Equal(7, original.RetainedLogFiles);
     }
 }

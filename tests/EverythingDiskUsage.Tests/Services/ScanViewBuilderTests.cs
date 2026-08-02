@@ -25,7 +25,7 @@ public sealed class ScanViewBuilderTests
         Assert.Equal(2, snapshot.FileDetails.GroupCount);
         Assert.Equal(4, snapshot.FileDetails.Rows.Count);
         Assert.Equal(1, snapshot.Duplicates.TotalGroups);
-        Assert.Equal(3, snapshot.Duplicates.Rows.Count);
+        Assert.Equal(2, snapshot.Duplicates.Rows.Count);
     }
 
     [Fact]
@@ -46,11 +46,14 @@ public sealed class ScanViewBuilderTests
         Assert.Equal(files.Length, snapshot.SourceFileCount);
         Assert.Equal(1, snapshot.TotalGroups);
         Assert.Equal(200, snapshot.TotalWastedBytes);
-        Assert.Equal(3, snapshot.Rows.Count);
-        Assert.True(snapshot.Rows[0].IsGroup);
-        Assert.Equal("2 copies", snapshot.Rows[0].PathText);
-        Assert.Equal(2, snapshot.Rows[0].CopyCount);
-        Assert.All(snapshot.Rows.Skip(1), row => Assert.False(row.IsGroup));
+        Assert.Equal(2, snapshot.Rows.Count);
+        Assert.Single(snapshot.FilesByDuplicateKey);
+        Assert.All(snapshot.Rows, row =>
+        {
+            Assert.Equal(2, row.CopyCount);
+            Assert.Equal(200, row.WastedBytes);
+            Assert.Contains("2 copies", row.DuplicateSetLabel, StringComparison.Ordinal);
+        });
         Assert.Equal("1 group \u00b7 200 B wasted", ScanViewBuilder.GetDuplicateSummaryText(snapshot));
     }
 
@@ -66,6 +69,18 @@ public sealed class ScanViewBuilderTests
 
         Assert.Empty(snapshot.Rows);
         Assert.Equal("No duplicates found", ScanViewBuilder.GetDuplicateSummaryText(snapshot));
+    }
+
+    [Fact]
+    public void GetAncestorFolderPath_WalksParentsAndCanResolveDriveRoot()
+    {
+        var path = Path.Combine(Path.GetPathRoot(NewRootPath())!, "one", "two", "three");
+
+        Assert.Equal(path, ScanViewBuilder.GetAncestorFolderPath(path, 0));
+        Assert.EndsWith(Path.Combine("one", "two"), ScanViewBuilder.GetAncestorFolderPath(path, 1), StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith("one", ScanViewBuilder.GetAncestorFolderPath(path, 2), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(Path.GetPathRoot(path), ScanViewBuilder.GetAncestorFolderPath(path, int.MaxValue));
+        Assert.Equal(Path.GetPathRoot(path), ScanViewBuilder.GetAncestorFolderPath(Path.GetPathRoot(path)!, 0));
     }
 
     [Fact]

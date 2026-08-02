@@ -114,6 +114,7 @@
                                                                   VerticalAlignment="Center"
                                                                   Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
                                                                   ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
+                                                                  ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
                                                                   ContentStringFormat="{Binding SelectionBoxItemStringFormat, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}" />
                                                 <Path HorizontalAlignment="Right"
                                                       VerticalAlignment="Center"
@@ -548,6 +549,11 @@
 
             <TabItem Header="Duplicates">
                 <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="5*" MinWidth="500" />
+                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="3*" MinWidth="320" />
+                    </Grid.ColumnDefinitions>
                     <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="10">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -559,8 +565,17 @@
                                 <TextBlock Text="Duplicate Files" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
                                 <TextBlock x:Name="DuplicatesSummaryTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" />
                             </DockPanel>
-                            <TextBlock Grid.Row="1" Foreground="{DynamicResource MutedText}" Margin="2,0,2,8" FontSize="12"
-                                       Text="Matched by identical file name and size  ·  Right-click any file row to open its shell menu" />
+                            <DockPanel Grid.Row="1" Margin="2,0,2,8">
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <TextBlock Text="Group by" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                    <ComboBox x:Name="DuplicateGroupingComboBox"
+                                              Width="150"
+                                              DisplayMemberPath="DisplayName"
+                                              SelectionChanged="DuplicateGroupingComboBox_SelectionChanged" />
+                                </StackPanel>
+                                <TextBlock Foreground="{DynamicResource MutedText}" FontSize="12" VerticalAlignment="Center"
+                                           Text="Matched by identical file name and size  ·  Right-click a file to open its shell menu" />
+                            </DockPanel>
                             <DataGrid x:Name="DuplicatesGrid"
                                       Grid.Row="2"
                                       AutoGenerateColumns="False"
@@ -573,17 +588,31 @@
                                       SelectionUnit="FullRow"
                                       EnableRowVirtualization="True"
                                       EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizingWhenGrouping="True"
+                                      SelectionChanged="DuplicatesGrid_SelectionChanged"
                                       PreviewMouseRightButtonDown="DuplicatesGrid_PreviewMouseRightButtonDown">
-                                <DataGrid.RowStyle>
-                                    <Style TargetType="{x:Type DataGridRow}" BasedOn="{StaticResource {x:Type DataGridRow}}">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsGroup}" Value="True">
-                                                <Setter Property="FontWeight" Value="SemiBold" />
-                                                <Setter Property="Background" Value="{DynamicResource GroupRowBackground}" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </DataGrid.RowStyle>
+                                <DataGrid.GroupStyle>
+                                    <GroupStyle>
+                                        <GroupStyle.ContainerStyle>
+                                            <Style TargetType="{x:Type GroupItem}">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="{x:Type GroupItem}">
+                                                            <Expander IsExpanded="True" Margin="0,1,0,0">
+                                                                <Expander.Header>
+                                                                    <Border Background="{DynamicResource GroupRowBackground}" Padding="8,6">
+                                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" TextTrimming="CharacterEllipsis" />
+                                                                    </Border>
+                                                                </Expander.Header>
+                                                                <ItemsPresenter />
+                                                            </Expander>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </GroupStyle.ContainerStyle>
+                                    </GroupStyle>
+                                </DataGrid.GroupStyle>
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="2*" />
                                     <DataGridTextColumn Header="Location" Binding="{Binding PathText}" Width="3*" />
@@ -594,59 +623,143 @@
                             </DataGrid>
                         </Grid>
                     </Border>
-                </Grid>
-            </TabItem>
 
-            <TabItem Header="Settings">
-                <Grid Margin="0,10,0,0">
-                    <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
+                    <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" />
+
+                    <Border Grid.Column="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <DockPanel Margin="0,0,0,14">
-                                <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
-                                <TextBlock x:Name="SettingsStatusTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" />
+                            <DockPanel Margin="0,0,0,8">
+                                <TextBlock Text="AI Advice" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                <TextBlock x:Name="DuplicateAdviceModelTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" TextTrimming="CharacterEllipsis" MaxWidth="170" />
                             </DockPanel>
+                            <TextBlock x:Name="DuplicateAdviceSelectionTextBlock" Grid.Row="1" Text="Select a duplicate set" Foreground="{DynamicResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                            <DockPanel Grid.Row="2" Margin="0,0,0,10">
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button x:Name="AnalyzeDuplicateButton" Style="{StaticResource PrimaryButton}" Content="Analyze" Click="AnalyzeDuplicateButton_Click" IsEnabled="False" />
+                                    <Button x:Name="CancelDuplicateAdviceButton" Style="{StaticResource ToolbarButton}" Content="Cancel" Click="CancelFoundryButton_Click" IsEnabled="False" />
+                                </StackPanel>
+                                <TextBlock x:Name="DuplicateAdviceStatusTextBlock" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            </DockPanel>
+                            <TextBlock x:Name="DuplicateAdviceSummaryTextBlock" Grid.Row="3" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                            <ListBox x:Name="DuplicateAdviceListBox" Grid.Row="4" BorderThickness="0" Background="Transparent" ScrollViewer.CanContentScroll="True">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="{DynamicResource BorderColor}" BorderThickness="0,0,0,1" Padding="2,8">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding ActionText}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" Margin="0,0,8,3" />
+                                                <TextBlock Grid.Column="1" Text="{Binding ConfidenceText}" Foreground="{DynamicResource MutedText}" HorizontalAlignment="Right" />
+                                                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Path}" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" FontSize="12" Margin="0,0,0,3" />
+                                                <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding Reason}" Foreground="{DynamicResource MutedText}" TextWrapping="Wrap" FontSize="12" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <TextBlock x:Name="DuplicateAdviceSafetyTextBlock" Grid.Row="5" Text="AI advice is non-destructive. Verify file contents before deleting anything." Foreground="{DynamicResource MutedText}" TextWrapping="Wrap" FontSize="11" Margin="0,10,0,0" />
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
 
-                            <Grid Grid.Row="1" Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="180" />
-                                    <ColumnDefinition Width="260" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Log level" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
-                                <ComboBox x:Name="LogLevelComboBox" Grid.Column="1" />
-                            </Grid>
+            <TabItem Header="Settings">
+                <Grid Margin="0,10,0,0">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <Border Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="16">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,14">
+                                    <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                    <TextBlock x:Name="SettingsStatusTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" />
+                                </DockPanel>
 
-                            <StackPanel Grid.Row="2" Margin="0,0,0,10">
-                                <CheckBox x:Name="LogEachSdkFileCheckBox" Content="Log every SDK file result" Foreground="{DynamicResource PrimaryText}" Margin="0,0,0,8" />
-                                <CheckBox x:Name="LogToDebugOutputCheckBox" Content="Write logs to debug output" Foreground="{DynamicResource PrimaryText}" />
-                            </StackPanel>
+                                <TextBlock Text="Logging" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" Margin="0,0,0,10" />
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180" />
+                                        <ColumnDefinition Width="260" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Log level" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
+                                    <ComboBox x:Name="LogLevelComboBox" Grid.Column="1" />
+                                </Grid>
 
-                            <Grid Grid.Row="3" Margin="0,0,0,14">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="180" />
-                                    <ColumnDefinition Width="120" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Retained log files" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
-                                <TextBox x:Name="RetainedLogFilesTextBox" Grid.Column="1" />
-                            </Grid>
+                                <StackPanel Margin="0,0,0,10">
+                                    <CheckBox x:Name="LogEachSdkFileCheckBox" Content="Log every SDK file result" Foreground="{DynamicResource PrimaryText}" Margin="0,0,0,8" />
+                                    <CheckBox x:Name="LogToDebugOutputCheckBox" Content="Write logs to debug output" Foreground="{DynamicResource PrimaryText}" />
+                                </StackPanel>
 
-                            <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,0,0,16">
-                                <Button x:Name="SaveSettingsButton" Style="{StaticResource PrimaryButton}" Content="Save" Click="SaveSettingsButton_Click" />
-                                <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolbarButton}" Content="Reset" Click="ResetSettingsButton_Click" />
-                                <Button x:Name="OpenLogFolderButton" Style="{StaticResource ToolbarButton}" Content="Open Logs" Click="OpenLogFolderButton_Click" />
-                                <Button x:Name="OpenSettingsFileButton" Style="{StaticResource ToolbarButton}" Content="Open Settings" Click="OpenSettingsFileButton_Click" />
-                            </StackPanel>
+                                <Grid Margin="0,0,0,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Retained log files" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
+                                    <TextBox x:Name="RetainedLogFilesTextBox" Grid.Column="1" />
+                                </Grid>
 
-                            <Grid Grid.Row="5">
+                                <Separator Background="{DynamicResource BorderColor}" Margin="0,2,0,14" />
+                                <DockPanel Margin="0,0,0,10">
+                                    <TextBlock Text="Foundry Local" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryText}" />
+                                    <TextBlock x:Name="FoundryStatusTextBlock" DockPanel.Dock="Right" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="520" />
+                                </DockPanel>
+                                <CheckBox x:Name="FoundryEnabledCheckBox" Content="Enable local AI advice" Foreground="{DynamicResource PrimaryText}" Checked="FoundrySetting_Changed" Unchecked="FoundrySetting_Changed" Margin="0,0,0,10" />
+
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Model" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
+                                    <ComboBox x:Name="FoundryModelComboBox" Grid.Column="1" MinWidth="300" SelectionChanged="FoundryModelComboBox_SelectionChanged" />
+                                    <Button x:Name="RefreshFoundryModelsButton" Grid.Column="2" Style="{StaticResource ToolbarButton}" Content="Refresh" Click="RefreshFoundryModelsButton_Click" />
+                                    <Button x:Name="PrepareFoundryModelButton" Grid.Column="3" Style="{StaticResource ToolbarButton}" Content="Prepare" Click="PrepareFoundryModelButton_Click" />
+                                </Grid>
+
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="180" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Inference timeout (seconds)" Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center" />
+                                    <TextBox x:Name="FoundryTimeoutTextBox" Grid.Column="1" />
+                                    <TextBlock x:Name="FoundryProbeStatusTextBlock" Grid.Column="2" Foreground="{DynamicResource MutedText}" VerticalAlignment="Center" Margin="12,0,0,0" />
+                                </Grid>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Button x:Name="RunFoundryProbeButton" Style="{StaticResource PrimaryButton}" Content="Run Model Probe" Click="RunFoundryProbeButton_Click" />
+                                    <Button x:Name="CancelFoundryButton" Style="{StaticResource ToolbarButton}" Content="Cancel" Click="CancelFoundryButton_Click" IsEnabled="False" />
+                                </StackPanel>
+                                <ProgressBar x:Name="FoundryProgressBar" Height="4" Minimum="0" Maximum="100" Visibility="Collapsed" Margin="0,0,0,12" />
+
+                                <Separator Background="{DynamicResource BorderColor}" Margin="0,2,0,14" />
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                    <Button x:Name="SaveSettingsButton" Style="{StaticResource PrimaryButton}" Content="Save" Click="SaveSettingsButton_Click" />
+                                    <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolbarButton}" Content="Reset" Click="ResetSettingsButton_Click" />
+                                    <Button x:Name="OpenLogFolderButton" Style="{StaticResource ToolbarButton}" Content="Open Logs" Click="OpenLogFolderButton_Click" />
+                                    <Button x:Name="OpenSettingsFileButton" Style="{StaticResource ToolbarButton}" Content="Open Settings" Click="OpenSettingsFileButton_Click" />
+                                </StackPanel>
+
+                                <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
@@ -662,9 +775,10 @@
                                 <TextBlock x:Name="LogDirectoryPathTextBlock" Grid.Row="1" Grid.Column="1" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" Margin="0,0,0,8" />
                                 <TextBlock Grid.Row="2" Text="Current log" Foreground="{DynamicResource MutedText}" VerticalAlignment="Top" Margin="0,0,12,0" />
                                 <TextBlock x:Name="CurrentLogFilePathTextBlock" Grid.Row="2" Grid.Column="1" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap" />
-                            </Grid>
-                        </Grid>
-                    </Border>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </ScrollViewer>
                 </Grid>
             </TabItem>
         </TabControl>

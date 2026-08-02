@@ -98,6 +98,11 @@ try {
         throw "Publish output did not contain $exeName"
     }
 
+    $foundryWorkerPath = Join-Path $publishDir "foundry-worker\EverythingDiskUsage.FoundryWorker.exe"
+    if (-not (Test-Path -LiteralPath $foundryWorkerPath)) {
+        throw "Publish output did not contain the Foundry Local worker"
+    }
+
     Write-Host "`n=== Step 2: Generate Install-EverythingDiskUsage.ps1 ===" -ForegroundColor Cyan
     $installScript = @'
 <#

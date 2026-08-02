@@ -1,27 +1,25 @@
 namespace EverythingDiskUsage.Models;
 
-/// <summary>
-/// A row in the Duplicates grid. Either a group header (IsGroup=true) that summarises
-/// one set of same-name/same-size files, or an individual file occurrence (IsGroup=false).
-/// </summary>
+/// <summary>A single file occurrence within a same-name, same-size duplicate set.</summary>
 public sealed record DuplicateFileRow(
+    string DuplicateKey,
     string Name,
-    string PathText,
-    string? ShellItemPath,
+    string DirectoryPath,
+    string ShellItemPath,
     int CopyCount,
     long SizeBytes,
-    long WastedBytes,
-    bool IsGroup)
+    long WastedBytes)
 {
-    /// <summary>Individual file rows are indented so they visually nest under the group header.</summary>
-    public string DisplayName => IsGroup ? Name : "    " + Name;
+    public string DisplayName => Name;
 
-    /// <summary>Number of copies — shown on group headers only.</summary>
-    public string CopyCountText => IsGroup ? CopyCount.ToString("N0") : string.Empty;
+    public string PathText => DirectoryPath;
 
-    /// <summary>Per-file size.</summary>
+    public string DuplicateSetLabel =>
+        $"{Name} \u00b7 {CopyCount:N0} copies \u00b7 {DirectoryUsageNode.FormatBytes(SizeBytes)} each \u00b7 {DirectoryUsageNode.FormatBytes(WastedBytes)} reclaimable";
+
+    public string CopyCountText => CopyCount.ToString("N0");
+
     public string SizeText => DirectoryUsageNode.FormatBytes(SizeBytes);
 
-    /// <summary>Bytes that could be freed by deleting all but one copy — shown on group headers only.</summary>
-    public string WastedText => IsGroup ? DirectoryUsageNode.FormatBytes(WastedBytes) : string.Empty;
+    public string WastedText => DirectoryUsageNode.FormatBytes(WastedBytes);
 }

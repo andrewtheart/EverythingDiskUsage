@@ -1,14 +1,17 @@
 using EverythingDiskUsage.Models;
 using EverythingDiskUsage.Native;
 using EverythingDiskUsage.Services;
+using EverythingDiskUsage.Services.Foundry;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -33,10 +36,24 @@ public partial class MainWindow : Window
     private readonly IAppLogger _logger;
     private readonly IAppSettingsService _settingsService;
     private readonly IShellContextMenuService _shellContextMenuService;
+    private readonly IFoundryLocalModelService _foundryModelService;
+    private readonly FoundryModelProbeRunner _foundryProbeRunner;
     private readonly BulkObservableCollection<DirectoryUsageNode> _treeRoots = [];
     private readonly BulkObservableCollection<DirectoryUsageNode> _directoryDetails = [];
     private readonly BulkObservableCollection<FileDetailRow> _fileDetails = [];
     private readonly BulkObservableCollection<DuplicateFileRow> _duplicateRows = [];
+    private readonly BulkObservableCollection<DuplicateRecommendationDecision> _duplicateRecommendations = [];
+    private readonly ObservableCollection<FoundryModelOption> _foundryModels = [];
+    private readonly ObservableCollection<DuplicateGroupingOption> _duplicateGroupingOptions =
+    [
+        new("Duplicate set", null),
+        new("Parent folder", 0),
+        new("2 levels up", 1),
+        new("3 levels up", 2),
+        new("4 levels up", 3),
+        new("5 levels up", 4),
+        new("Drive / root", int.MaxValue)
+    ];
     private readonly ObservableCollection<LogLevelOption> _logLevelOptions =
     [
         new("Verbose", AppLogLevel.Trace),
@@ -48,18 +65,40 @@ public partial class MainWindow : Window
     ];
     private readonly Forms.NotifyIcon _notifyIcon = new();
     private CancellationTokenSource? _scanCancellation;
+    private CancellationTokenSource? _foundryCancellation;
     private DirectoryUsageNode? _selectedNode;
     private DirectoryUsageNode? _currentRoot;
     private string? _currentRootPath;
     private IReadOnlyList<FileUsageItem> _allFilesSorted = [];
+    private DuplicateRowsSnapshot? _currentDuplicateSnapshot;
+    private ICollectionView? _duplicatesView;
+    private string? _duplicateAdviceKey;
     private bool _isUpdatingScanView;
     private bool _suppressDirectorySelectionUpdate;
     private AppSettings _appSettings = new();
     private bool _isListeningForSystemThemeChanges;
+    private bool _isFoundryBusy;
     private DateTime _lastUiProgressLogUtc = DateTime.MinValue;
     private long _lastUiProgressLoggedFiles;
 
     private sealed record LogLevelOption(string DisplayName, AppLogLevel Level);
+
+    private sealed record DuplicateGroupingOption(string DisplayName, int? LevelsUp);
+
+    private sealed class AncestorFolderConverter(int levelsUp) : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return value is string directoryPath
+                ? ScanViewBuilder.GetAncestorFolderPath(directoryPath, levelsUp)
+                : string.Empty;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotSupportedException();
+        }
+    }
 
     private sealed record ThemePalette(
         MediaColor WindowBackground,
@@ -110,7 +149,17 @@ public partial class MainWindow : Window
         IAppLogger logger,
         IAppSettingsService settingsService,
         IShellContextMenuService shellContextMenuService)
-        : this(analyzer, logger, settingsService, shellContextMenuService, configureNotifications: true)
+        : this(analyzer, logger, settingsService, shellContextMenuService, new FoundryWorkerClient(logger), configureNotifications: true)
+    {
+    }
+
+    public MainWindow(
+        IDiskUsageAnalyzer analyzer,
+        IAppLogger logger,
+        IAppSettingsService settingsService,
+        IShellContextMenuService shellContextMenuService,
+        IFoundryLocalModelService foundryModelService)
+        : this(analyzer, logger, settingsService, shellContextMenuService, foundryModelService, configureNotifications: true)
     {
     }
 
@@ -120,18 +169,35 @@ public partial class MainWindow : Window
         IAppSettingsService settingsService,
         IShellContextMenuService shellContextMenuService,
         bool configureNotifications)
+        : this(analyzer, logger, settingsService, shellContextMenuService, new FoundryWorkerClient(logger), configureNotifications)
+    {
+    }
+
+    public MainWindow(
+        IDiskUsageAnalyzer analyzer,
+        IAppLogger logger,
+        IAppSettingsService settingsService,
+        IShellContextMenuService shellContextMenuService,
+        IFoundryLocalModelService foundryModelService,
+        bool configureNotifications)
     {
         _analyzer = analyzer;
         _logger = logger;
         _settingsService = settingsService;
         _shellContextMenuService = shellContextMenuService;
+        _foundryModelService = foundryModelService;
+        _foundryProbeRunner = new FoundryModelProbeRunner(foundryModelService);
 
         _logger.Info("MainWindow constructor starting");
         InitializeComponent();
         UsageTree.ItemsSource = _treeRoots;
         DirectoryDetailsGrid.ItemsSource = _directoryDetails;
         FileDetailsGrid.ItemsSource = _fileDetails;
-        DuplicatesGrid.ItemsSource = _duplicateRows;
+        _duplicatesView = CollectionViewSource.GetDefaultView(_duplicateRows);
+        DuplicatesGrid.ItemsSource = _duplicatesView;
+        DuplicateAdviceListBox.ItemsSource = _duplicateRecommendations;
+        DuplicateGroupingComboBox.ItemsSource = _duplicateGroupingOptions;
+        DuplicateGroupingComboBox.SelectedIndex = 0;
         ConfigureSettingsUi();
         ListenForSystemThemeChanges();
         if (configureNotifications)
@@ -145,6 +211,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _logger.Info("MainWindow closing; disposing notification icon");
+        _foundryCancellation?.Cancel();
         if (_isListeningForSystemThemeChanges)
         {
             SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
@@ -291,7 +358,9 @@ public partial class MainWindow : Window
         FolderDetailsSummaryTextBlock.Text = string.Empty;
         FileDetailsSummaryTextBlock.Text = string.Empty;
         _duplicateRows.Clear();
+        _currentDuplicateSnapshot = null;
         DuplicatesSummaryTextBlock.Text = string.Empty;
+        ClearDuplicateAdvice();
         _logger.Debug("Cleared previous scan UI state");
 
         var progress = new Progress<ScanProgress>(UpdateProgress);
@@ -412,6 +481,9 @@ public partial class MainWindow : Window
         LogLevelComboBox.ItemsSource = _logLevelOptions;
         LogLevelComboBox.DisplayMemberPath = nameof(LogLevelOption.DisplayName);
         LogLevelComboBox.SelectedValuePath = nameof(LogLevelOption.Level);
+        FoundryModelComboBox.ItemsSource = _foundryModels;
+        FoundryModelComboBox.DisplayMemberPath = nameof(FoundryModelOption.DisplayLabel);
+        FoundryModelComboBox.SelectedValuePath = nameof(FoundryModelOption.Alias);
         LoadSettingsIntoUi(_settingsService.Load());
         SettingsFilePathTextBlock.Text = _settingsService.SettingsFilePath;
         LogDirectoryPathTextBlock.Text = _logger.LogDirectory;
@@ -421,13 +493,30 @@ public partial class MainWindow : Window
 
     private void LoadSettingsIntoUi(AppSettings settings)
     {
-        _logger.Debug($"Loading settings into UI; minimumLogLevel={settings.MinimumLogLevel}; themeMode={settings.ThemeMode}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
+        _logger.Debug($"Loading settings into UI; minimumLogLevel={settings.MinimumLogLevel}; themeMode={settings.ThemeMode}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}; foundryEnabled={settings.FoundryEnabled}; foundryModel='{settings.FoundryModelAlias ?? string.Empty}'");
         _appSettings = _settingsService.Normalize(settings);
         ApplyTheme(_appSettings.ThemeMode);
         LogLevelComboBox.SelectedValue = _appSettings.MinimumLogLevel;
         LogEachSdkFileCheckBox.IsChecked = _appSettings.LogEachSdkFile;
         LogToDebugOutputCheckBox.IsChecked = _appSettings.LogToDebugOutput;
         RetainedLogFilesTextBox.Text = _appSettings.RetainedLogFiles.ToString(CultureInfo.InvariantCulture);
+        FoundryEnabledCheckBox.IsChecked = _appSettings.FoundryEnabled;
+        FoundryTimeoutTextBox.Text = _appSettings.FoundryInferenceTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
+        _foundryModels.Clear();
+        if (!string.IsNullOrWhiteSpace(_appSettings.FoundryModelAlias))
+        {
+            _foundryModels.Add(new FoundryModelOption(
+                _appSettings.FoundryModelAlias,
+                _appSettings.FoundryModelAlias,
+                Id: null,
+                SizeBytes: null,
+                IsCached: false,
+                IsRecommended: false));
+            FoundryModelComboBox.SelectedValue = _appSettings.FoundryModelAlias;
+        }
+
+        UpdateFoundryQualificationStatus();
+        UpdateFoundryControlState();
         SettingsStatusTextBlock.Text = string.Empty;
     }
 
@@ -536,8 +625,10 @@ public partial class MainWindow : Window
             _settingsService.Save(settings);
             _logger.ApplySettings(settings, "Settings UI");
             _appSettings = settings.Clone();
+            UpdateFoundryQualificationStatus();
+            UpdateFoundryControlState();
             SettingsStatusTextBlock.Text = $"Saved {DateTime.Now:h:mm:ss tt}";
-            _logger.Info($"Settings saved from UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
+            _logger.Info($"Settings saved from UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}; foundryEnabled={settings.FoundryEnabled}; foundryModel='{settings.FoundryModelAlias ?? string.Empty}'; foundryTimeoutSeconds={settings.FoundryInferenceTimeoutSeconds}");
         }
         catch (Exception ex)
         {
@@ -596,7 +687,7 @@ public partial class MainWindow : Window
 
     private bool TryReadSettingsFromUi(out AppSettings settings)
     {
-        _logger.Debug($"Reading settings from UI; selectedLogLevel='{LogLevelComboBox.SelectedValue}'; retainedLogFilesText='{RetainedLogFilesTextBox.Text}'");
+        _logger.Debug($"Reading settings from UI; selectedLogLevel='{LogLevelComboBox.SelectedValue}'; retainedLogFilesText='{RetainedLogFilesTextBox.Text}'; foundryTimeoutText='{FoundryTimeoutTextBox.Text}'");
         settings = new AppSettings();
         var selectedLevel = LogLevelComboBox.SelectedValue is AppLogLevel level ? level : AppLogLevel.Info;
         if (!int.TryParse(RetainedLogFilesTextBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var retainedLogFiles) || retainedLogFiles < 1 || retainedLogFiles > 500)
@@ -608,16 +699,265 @@ public partial class MainWindow : Window
             return false;
         }
 
+        if (!int.TryParse(FoundryTimeoutTextBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var foundryTimeoutSeconds) || foundryTimeoutSeconds < 30 || foundryTimeoutSeconds > 600)
+        {
+            _logger.Warning($"Settings validation failed; foundryTimeoutText='{FoundryTimeoutTextBox.Text}'");
+            System.Windows.MessageBox.Show(this, "Foundry inference timeout must be a number from 30 to 600 seconds.", "Invalid settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            FoundryTimeoutTextBox.Focus();
+            FoundryTimeoutTextBox.SelectAll();
+            return false;
+        }
+
+        var foundryModelAlias = SelectedFoundryModelAlias();
+        var qualificationMatches = string.Equals(
+            foundryModelAlias,
+            _appSettings.FoundryQualifiedModelAlias,
+            StringComparison.OrdinalIgnoreCase);
+
         settings = new AppSettings
         {
             MinimumLogLevel = selectedLevel,
             ThemeMode = _appSettings.ThemeMode,
             LogEachSdkFile = LogEachSdkFileCheckBox.IsChecked == true,
             LogToDebugOutput = LogToDebugOutputCheckBox.IsChecked == true,
-            RetainedLogFiles = retainedLogFiles
+            RetainedLogFiles = retainedLogFiles,
+            FoundryEnabled = FoundryEnabledCheckBox.IsChecked == true,
+            FoundryModelAlias = foundryModelAlias,
+            FoundryInferenceTimeoutSeconds = foundryTimeoutSeconds,
+            FoundryQualifiedModelAlias = qualificationMatches ? _appSettings.FoundryQualifiedModelAlias : null,
+            FoundryQualificationUtc = qualificationMatches ? _appSettings.FoundryQualificationUtc : null
         };
         _logger.Debug($"Settings read from UI; minimumLogLevel={settings.MinimumLogLevel}; logEachSdkFile={settings.LogEachSdkFile}; logToDebugOutput={settings.LogToDebugOutput}; retainedLogFiles={settings.RetainedLogFiles}");
         return true;
+    }
+
+    private async void RefreshFoundryModelsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryBeginFoundryOperation("Loading local model catalog", out var cancellationToken))
+        {
+            return;
+        }
+
+        try
+        {
+            var selectedAlias = SelectedFoundryModelAlias() ?? _appSettings.FoundryModelAlias;
+            var models = await _foundryModelService.ListModelsAsync(CreateFoundryProgress(), cancellationToken);
+            _foundryModels.Clear();
+            foreach (var model in models)
+            {
+                _foundryModels.Add(model);
+            }
+
+            var selected = models.FirstOrDefault(model =>
+                    model.Alias.Equals(selectedAlias, StringComparison.OrdinalIgnoreCase)) ??
+                models.FirstOrDefault(model => model.IsRecommended) ??
+                models.FirstOrDefault();
+            FoundryModelComboBox.SelectedItem = selected;
+            FoundryStatusTextBlock.Text = models.Count == 0 ? "No compatible text models found" : $"{models.Count:N0} local models available";
+        }
+        catch (OperationCanceledException)
+        {
+            FoundryStatusTextBlock.Text = "Model catalog cancelled";
+        }
+        catch (Exception exception)
+        {
+            HandleFoundryFailure("Load model catalog", exception);
+        }
+        finally
+        {
+            EndFoundryOperation();
+        }
+    }
+
+    private async void PrepareFoundryModelButton_Click(object sender, RoutedEventArgs e)
+    {
+        var alias = SelectedFoundryModelAlias();
+        if (alias is null || !TryBeginFoundryOperation($"Preparing {alias}", out var cancellationToken))
+        {
+            return;
+        }
+
+        try
+        {
+            await _foundryModelService.PrepareModelAsync(alias, CreateFoundryProgress(), cancellationToken);
+            FoundryStatusTextBlock.Text = $"{alias} is ready";
+        }
+        catch (OperationCanceledException)
+        {
+            FoundryStatusTextBlock.Text = "Model preparation cancelled";
+        }
+        catch (Exception exception)
+        {
+            HandleFoundryFailure("Prepare model", exception);
+        }
+        finally
+        {
+            EndFoundryOperation();
+        }
+    }
+
+    private async void RunFoundryProbeButton_Click(object sender, RoutedEventArgs e)
+    {
+        var alias = SelectedFoundryModelAlias();
+        if (alias is null || !TryReadFoundryTimeout(out var timeout) ||
+            !TryBeginFoundryOperation($"Probing {alias}", out var cancellationToken))
+        {
+            return;
+        }
+
+        try
+        {
+            var report = await _foundryProbeRunner.RunAsync(alias, timeout, CreateFoundryProgress(), cancellationToken);
+            var updated = _appSettings.Clone();
+            updated.FoundryEnabled = FoundryEnabledCheckBox.IsChecked == true;
+            updated.FoundryModelAlias = alias;
+            updated.FoundryInferenceTimeoutSeconds = (int)timeout.TotalSeconds;
+            updated.FoundryQualifiedModelAlias = report.Passed ? alias : null;
+            updated.FoundryQualificationUtc = report.Passed ? report.CompletedAt.ToUniversalTime() : null;
+            _settingsService.Save(updated);
+            _appSettings = _settingsService.Normalize(updated);
+            FoundryProbeStatusTextBlock.ToolTip = string.Join(
+                Environment.NewLine,
+                report.Scenarios.Select(scenario => $"{scenario.Name}: {(scenario.Passed ? "Pass" : "Fail")} - {scenario.Detail}"));
+            FoundryStatusTextBlock.Text = report.Summary;
+            UpdateFoundryQualificationStatus();
+        }
+        catch (OperationCanceledException)
+        {
+            FoundryStatusTextBlock.Text = "Model probe cancelled";
+        }
+        catch (Exception exception)
+        {
+            HandleFoundryFailure("Run model probe", exception);
+        }
+        finally
+        {
+            EndFoundryOperation();
+        }
+    }
+
+    private void CancelFoundryButton_Click(object sender, RoutedEventArgs e)
+    {
+        _foundryCancellation?.Cancel();
+    }
+
+    private void FoundrySetting_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateFoundryQualificationStatus();
+        UpdateFoundryControlState();
+    }
+
+    private void FoundryModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateFoundryQualificationStatus();
+        UpdateFoundryControlState();
+    }
+
+    private bool TryReadFoundryTimeout(out TimeSpan timeout)
+    {
+        if (int.TryParse(FoundryTimeoutTextBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) &&
+            seconds is >= 30 and <= 600)
+        {
+            timeout = TimeSpan.FromSeconds(seconds);
+            return true;
+        }
+
+        timeout = default;
+        System.Windows.MessageBox.Show(this, "Foundry inference timeout must be a number from 30 to 600 seconds.", "Invalid timeout", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
+    }
+
+    private string? SelectedFoundryModelAlias()
+    {
+        return FoundryModelComboBox.SelectedItem is FoundryModelOption option
+            ? option.Alias
+            : FoundryModelComboBox.SelectedValue as string;
+    }
+
+    private bool TryBeginFoundryOperation(string status, out CancellationToken cancellationToken)
+    {
+        if (_foundryCancellation is not null)
+        {
+            cancellationToken = default;
+            return false;
+        }
+
+        _foundryCancellation = new CancellationTokenSource();
+        cancellationToken = _foundryCancellation.Token;
+        _isFoundryBusy = true;
+        FoundryStatusTextBlock.Text = status;
+        DuplicateAdviceStatusTextBlock.Text = status;
+        FoundryProgressBar.Visibility = Visibility.Visible;
+        FoundryProgressBar.IsIndeterminate = true;
+        UpdateFoundryControlState();
+        return true;
+    }
+
+    private void EndFoundryOperation()
+    {
+        _foundryCancellation?.Dispose();
+        _foundryCancellation = null;
+        _isFoundryBusy = false;
+        FoundryProgressBar.IsIndeterminate = false;
+        FoundryProgressBar.Visibility = Visibility.Collapsed;
+        UpdateFoundryControlState();
+    }
+
+    private IProgress<FoundryProgress> CreateFoundryProgress()
+    {
+        return new Progress<FoundryProgress>(progress =>
+        {
+            var percentText = progress.Percent is double percent ? $" {percent:0}%" : string.Empty;
+            var status = $"{progress.Detail}{percentText}".Trim();
+            FoundryStatusTextBlock.Text = status;
+            DuplicateAdviceStatusTextBlock.Text = status;
+            FoundryProgressBar.IsIndeterminate = progress.Percent is null;
+            if (progress.Percent is double value)
+            {
+                FoundryProgressBar.Value = Math.Clamp(value, 0, 100);
+            }
+        });
+    }
+
+    private void HandleFoundryFailure(string operation, Exception exception)
+    {
+        _logger.Error($"{operation} failed", exception);
+        FoundryStatusTextBlock.Text = exception.Message;
+        DuplicateAdviceStatusTextBlock.Text = exception.Message;
+    }
+
+    private void UpdateFoundryQualificationStatus()
+    {
+        var alias = SelectedFoundryModelAlias() ?? _appSettings.FoundryModelAlias;
+        var qualified = !string.IsNullOrWhiteSpace(alias) &&
+            string.Equals(alias, _appSettings.FoundryQualifiedModelAlias, StringComparison.OrdinalIgnoreCase) &&
+            _appSettings.FoundryQualificationUtc is not null;
+        FoundryProbeStatusTextBlock.Text = qualified
+            ? $"Qualified {_appSettings.FoundryQualificationUtc!.Value.ToLocalTime():g}"
+            : "Probe required for selected model";
+    }
+
+    private bool IsSelectedFoundryModelQualified()
+    {
+        var alias = SelectedFoundryModelAlias() ?? _appSettings.FoundryModelAlias;
+        return _appSettings.FoundryEnabled &&
+            !string.IsNullOrWhiteSpace(alias) &&
+            string.Equals(alias, _appSettings.FoundryQualifiedModelAlias, StringComparison.OrdinalIgnoreCase) &&
+            _appSettings.FoundryQualificationUtc is not null;
+    }
+
+    private void UpdateFoundryControlState()
+    {
+        var enabledInSettingsUi = FoundryEnabledCheckBox.IsChecked == true;
+        var hasModel = SelectedFoundryModelAlias() is not null;
+        FoundryModelComboBox.IsEnabled = enabledInSettingsUi && !_isFoundryBusy;
+        RefreshFoundryModelsButton.IsEnabled = enabledInSettingsUi && !_isFoundryBusy;
+        PrepareFoundryModelButton.IsEnabled = enabledInSettingsUi && hasModel && !_isFoundryBusy;
+        RunFoundryProbeButton.IsEnabled = enabledInSettingsUi && hasModel && !_isFoundryBusy;
+        CancelFoundryButton.IsEnabled = _isFoundryBusy;
+        AnalyzeDuplicateButton.IsEnabled = !_isFoundryBusy &&
+            DuplicatesGrid.SelectedItem is DuplicateFileRow;
+        CancelDuplicateAdviceButton.IsEnabled = _isFoundryBusy;
     }
 
     private void ShowSearchCompleteNotificationIfNeeded(string rootPath, ScanResult result)
@@ -746,6 +1086,117 @@ public partial class MainWindow : Window
         row.Focus();
         e.Handled = true;
         await ShowShellContextMenuAsync(shellItemPath, ShellItemKind.File, e.GetPosition(this), "duplicates");
+    }
+
+    private void DuplicateGroupingComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ApplyDuplicateGrouping();
+    }
+
+    private void DuplicatesGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var selectedRow = DuplicatesGrid.SelectedItem as DuplicateFileRow;
+        if (_duplicateAdviceKey is not null &&
+            !string.Equals(_duplicateAdviceKey, selectedRow?.DuplicateKey, StringComparison.OrdinalIgnoreCase))
+        {
+            ClearDuplicateAdviceContent();
+        }
+
+        DuplicateAdviceSelectionTextBlock.Text = selectedRow is not null
+            ? selectedRow.DuplicateSetLabel
+            : "Select a duplicate set";
+        UpdateFoundryControlState();
+    }
+
+    private async void AnalyzeDuplicateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DuplicatesGrid.SelectedItem is not DuplicateFileRow selectedRow ||
+            _currentDuplicateSnapshot is null ||
+            !_currentDuplicateSnapshot.FilesByDuplicateKey.TryGetValue(selectedRow.DuplicateKey, out var files))
+        {
+            return;
+        }
+
+        var alias = SelectedFoundryModelAlias() ?? _appSettings.FoundryModelAlias;
+        if (alias is null || !IsSelectedFoundryModelQualified())
+        {
+            DuplicateAdviceStatusTextBlock.Text = "Enable Foundry Local and qualify the selected model in Settings.";
+            return;
+        }
+
+        if (!TryBeginFoundryOperation($"Analyzing {files.Count:N0} duplicate paths", out var cancellationToken))
+        {
+            return;
+        }
+
+        ClearDuplicateAdviceContent();
+        _duplicateAdviceKey = selectedRow.DuplicateKey;
+        try
+        {
+            var candidates = files.Select(file => new DuplicateRecommendationCandidate(
+                file.FullPath,
+                file.DirectoryPath,
+                file.SizeBytes,
+                file.LastModifiedUtc,
+                file.LastAccessedUtc)).ToList();
+            var request = new DuplicateRecommendationRequest(
+                selectedRow.Name,
+                selectedRow.SizeBytes,
+                candidates,
+                "Identify likely canonical, generated, cached, or temporary copies using only the supplied metadata. Default to Review when evidence is ambiguous.");
+            var result = await _foundryModelService.RecommendAsync(
+                request,
+                alias,
+                TimeSpan.FromSeconds(_appSettings.FoundryInferenceTimeoutSeconds),
+                CreateFoundryProgress(),
+                cancellationToken);
+            if (DuplicatesGrid.SelectedItem is not DuplicateFileRow currentRow ||
+                !currentRow.DuplicateKey.Equals(selectedRow.DuplicateKey, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _duplicateRecommendations.ReplaceAll(result.Decisions);
+            DuplicateAdviceSummaryTextBlock.Text = result.Summary;
+            DuplicateAdviceSafetyTextBlock.Text = result.SafetyNote;
+            DuplicateAdviceModelTextBlock.Text = result.Model;
+            DuplicateAdviceStatusTextBlock.Text = $"{result.Decisions.Count:N0} advisory decisions";
+        }
+        catch (OperationCanceledException)
+        {
+            DuplicateAdviceStatusTextBlock.Text = "Analysis cancelled";
+        }
+        catch (Exception exception)
+        {
+            HandleFoundryFailure("Analyze duplicate set", exception);
+        }
+        finally
+        {
+            EndFoundryOperation();
+        }
+    }
+
+    private void ApplyDuplicateGrouping()
+    {
+        if (_duplicatesView is null || DuplicateGroupingComboBox.SelectedItem is not DuplicateGroupingOption option)
+        {
+            return;
+        }
+
+        using (_duplicatesView.DeferRefresh())
+        {
+            _duplicatesView.GroupDescriptions.Clear();
+            if (option.LevelsUp is int levelsUp)
+            {
+                _duplicatesView.GroupDescriptions.Add(new PropertyGroupDescription(
+                    nameof(DuplicateFileRow.DirectoryPath),
+                    new AncestorFolderConverter(levelsUp)));
+            }
+
+            _duplicatesView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(DuplicateFileRow.DuplicateSetLabel)));
+        }
+
+        _logger.Info($"Duplicate grouping changed; mode='{option.DisplayName}', folderLevelsUp={option.LevelsUp?.ToString(CultureInfo.InvariantCulture) ?? "none"}");
     }
 
     private async Task ShowShellContextMenuAsync(string path, ShellItemKind itemKind, WpfPoint localPoint, string source)
@@ -1073,7 +1524,9 @@ public partial class MainWindow : Window
 
     private void ApplyDuplicateSnapshot(DuplicateRowsSnapshot snapshot)
     {
+        _currentDuplicateSnapshot = snapshot;
         _duplicateRows.ReplaceAll(snapshot.Rows);
+        ClearDuplicateAdvice();
 
         if (snapshot.SourceFileCount == 0)
         {
@@ -1084,6 +1537,23 @@ public partial class MainWindow : Window
         DuplicatesSummaryTextBlock.Text = ScanViewBuilder.GetDuplicateSummaryText(snapshot);
 
         _logger.Info($"Duplicates populated; totalGroups={snapshot.TotalGroups}, shownGroups={Math.Min(snapshot.TotalGroups, snapshot.MaxGroups)}, totalWastedBytes={snapshot.TotalWastedBytes}");
+    }
+
+    private void ClearDuplicateAdvice()
+    {
+        ClearDuplicateAdviceContent();
+        DuplicateAdviceSelectionTextBlock.Text = "Select a duplicate set";
+        UpdateFoundryControlState();
+    }
+
+    private void ClearDuplicateAdviceContent()
+    {
+        _duplicateAdviceKey = null;
+        _duplicateRecommendations.Clear();
+        DuplicateAdviceSummaryTextBlock.Text = string.Empty;
+        DuplicateAdviceSafetyTextBlock.Text = "AI advice is non-destructive. Verify file contents before deleting anything.";
+        DuplicateAdviceModelTextBlock.Text = string.Empty;
+        DuplicateAdviceStatusTextBlock.Text = string.Empty;
     }
 
     private void SelectDirectoryDetailsNode(DirectoryUsageNode node)

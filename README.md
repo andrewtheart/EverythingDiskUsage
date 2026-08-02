@@ -19,6 +19,7 @@ The installer is self-contained, so it includes the .NET runtime files needed by
 - Everything Search running in the background with its database loaded
 - .NET 11 SDK Preview 6 or newer only if you want to build from source
 - Inno Setup 6 only if you want to rebuild the installer locally
+- A supported local AI accelerator and internet access for the initial Foundry runtime/model download only if you enable AI advice
 
 Install Inno Setup machine-wide with:
 
@@ -77,12 +78,26 @@ Use this tab when you need exact paths, file counts, timestamps, or a sortable t
 
 The **Duplicates** tab groups files that have the same file name and the same size.
 
-- A group row shows the duplicate name, copy count, per-file size, and estimated wasted space.
-- Child rows show each matching file location.
+- Each row is a real file occurrence and shows its location, copy count, per-file size, and estimated wasted space.
+- Use **Group by** to expand duplicate sets by their parent folder, higher ancestors, or drive/root.
+- Folder and duplicate-set groups are expandable, so you can compare where copies cluster at the depth that matters to you.
 - Zero-byte files are ignored for duplicate grouping.
 - The view shows the top duplicate groups by wasted bytes.
 
 Duplicate detection is intentionally conservative: it does not hash file contents. Treat the list as a fast lead generator, then verify files before deleting anything important.
+
+### Local AI Advice
+
+The optional **AI Advice** pane uses Microsoft Foundry Local to assess every path in the selected duplicate set. File metadata and paths stay on the computer; the app does not upload files or send them to a hosted model.
+
+1. Open **Settings** and enable **local AI advice**.
+2. Refresh the model catalog and select a model. The recommended model appears first.
+3. Click **Prepare** to download and load the model, then click **Run Model Probe**.
+4. After all four deterministic probe scenarios pass, return to **Duplicates**, select a file occurrence, and click **Analyze**.
+
+The model returns **Keep**, **Delete candidate**, or **Review** for each supplied path. Results are advisory and never delete files. The app requires exact supplied paths, validates the complete response, and changes deletion advice for protected locations to **Review**. Because duplicates are matched by name and size rather than content hash, manually verify contents before deleting anything.
+
+Foundry runs in an isolated worker process so model/runtime failures do not take down the main window. The first catalog refresh may install local execution-provider components, and preparing a model may download several gigabytes. Models are not bundled in the installer.
 
 ### Shell Menu Actions
 
@@ -97,13 +112,16 @@ If a file or folder no longer exists, the app refreshes the current view from th
 
 ### Settings Tab
 
-Open the **Settings** tab to adjust logging behavior.
+Open the **Settings** tab to adjust logging and Foundry Local behavior.
 
 - Use the theme glyph in the window header to cycle through **Auto**, **Light**, and **Dark**. Auto is the default and follows the Windows app theme.
 - **Log level** controls how verbose the app log is.
 - **Log every SDK file result** records every accepted file path from the Everything SDK.
 - **Write logs to debug output** mirrors log lines to debug listeners.
 - **Retained log files** controls how many historical log files are kept.
+- **Enable local AI advice** controls whether qualified-model analysis is available in the Duplicates tab.
+- **Model**, **Prepare**, and **Run Model Probe** manage the local model and its qualification.
+- **Inference timeout** limits each model recommendation request.
 
 Settings are saved to:
 

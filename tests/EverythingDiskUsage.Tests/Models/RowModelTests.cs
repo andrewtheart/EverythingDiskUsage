@@ -44,17 +44,15 @@ public sealed class RowModelTests
     }
 
     [Fact]
-    public void DuplicateFileRow_FormatsGroupAndFileRowsDifferently()
+    public void DuplicateFileRow_FormatsOccurrenceAndDuplicateSetMetadata()
     {
-        var group = new DuplicateFileRow("a.zip", "3 copies", null, 3, 1024, 2048, IsGroup: true);
-        var file = new DuplicateFileRow("a.zip", @"C:\Data", @"C:\Data\a.zip", 1, 1024, 0, IsGroup: false);
+        var row = new DuplicateFileRow("A.ZIP\0" + 1024, "a.zip", @"C:\Data", @"C:\Data\a.zip", 3, 1024, 2048);
 
-        Assert.Equal("a.zip", group.DisplayName);
-        Assert.Equal("3", group.CopyCountText);
-        Assert.Equal("2 KB", group.WastedText);
-
-        Assert.Equal("    a.zip", file.DisplayName);
-        Assert.Equal(string.Empty, file.CopyCountText);
-        Assert.Equal(string.Empty, file.WastedText);
+        Assert.Equal("a.zip", row.DisplayName);
+        Assert.Equal(@"C:\Data", row.PathText);
+        Assert.Equal("3", row.CopyCountText);
+        Assert.Equal("1 KB", row.SizeText);
+        Assert.Equal("2 KB", row.WastedText);
+        Assert.Contains("3 copies", row.DuplicateSetLabel, StringComparison.Ordinal);
     }
 }

@@ -16,6 +16,16 @@ public sealed class AppSettings
 
     public int RetainedLogFiles { get; set; } = 20;
 
+    public bool FoundryEnabled { get; set; }
+
+    public string? FoundryModelAlias { get; set; }
+
+    public int FoundryInferenceTimeoutSeconds { get; set; } = 120;
+
+    public string? FoundryQualifiedModelAlias { get; set; }
+
+    public DateTimeOffset? FoundryQualificationUtc { get; set; }
+
     public AppSettings Clone()
     {
         return new AppSettings
@@ -24,7 +34,12 @@ public sealed class AppSettings
             ThemeMode = ThemeMode,
             LogEachSdkFile = LogEachSdkFile,
             LogToDebugOutput = LogToDebugOutput,
-            RetainedLogFiles = RetainedLogFiles
+            RetainedLogFiles = RetainedLogFiles,
+            FoundryEnabled = FoundryEnabled,
+            FoundryModelAlias = FoundryModelAlias,
+            FoundryInferenceTimeoutSeconds = FoundryInferenceTimeoutSeconds,
+            FoundryQualifiedModelAlias = FoundryQualifiedModelAlias,
+            FoundryQualificationUtc = FoundryQualificationUtc
         };
     }
 }
@@ -82,7 +97,9 @@ public static class AppSettingsService
             ThemeMode = AppThemeMode.Auto,
             LogEachSdkFile = IsEnabled("EVERYTHING_DISK_USAGE_LOG_EACH_FILE"),
             LogToDebugOutput = false,
-            RetainedLogFiles = 20
+            RetainedLogFiles = 20,
+            FoundryEnabled = false,
+            FoundryInferenceTimeoutSeconds = 120
         };
     }
 
@@ -100,7 +117,24 @@ public static class AppSettingsService
         }
 
         normalized.RetainedLogFiles = Math.Clamp(normalized.RetainedLogFiles, 1, 500);
+        normalized.FoundryInferenceTimeoutSeconds = Math.Clamp(normalized.FoundryInferenceTimeoutSeconds, 30, 600);
+        normalized.FoundryModelAlias = NormalizeOptionalValue(normalized.FoundryModelAlias);
+        normalized.FoundryQualifiedModelAlias = NormalizeOptionalValue(normalized.FoundryQualifiedModelAlias);
+        if (!string.Equals(
+                normalized.FoundryModelAlias,
+                normalized.FoundryQualifiedModelAlias,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            normalized.FoundryQualifiedModelAlias = null;
+            normalized.FoundryQualificationUtc = null;
+        }
+
         return normalized;
+    }
+
+    private static string? NormalizeOptionalValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static string ResolveSettingsDirectory()

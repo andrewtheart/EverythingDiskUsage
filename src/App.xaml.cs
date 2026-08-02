@@ -1,4 +1,5 @@
 ﻿using EverythingDiskUsage.Services;
+using EverythingDiskUsage.Services.Foundry;
 using Microsoft.Extensions.DependencyInjection;
 using System.Windows;
 using System.Windows.Threading;
@@ -54,6 +55,8 @@ public partial class App : System.Windows.Application
 		services.AddSingleton<IAppSettingsService, AppSettingsServiceAdapter>();
 		services.AddSingleton<IDiskUsageAnalyzer, DiskUsageAnalyzer>();
 		services.AddSingleton<IShellContextMenuService, ShellContextMenuService>();
+		services.AddSingleton<IFoundryLocalModelService>(provider =>
+			new FoundryWorkerClient(provider.GetRequiredService<IAppLogger>()));
 		services.AddTransient<MainWindow>();
 		return services.BuildServiceProvider(validateScopes: true);
 	}

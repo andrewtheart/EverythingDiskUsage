@@ -15,11 +15,49 @@
   <ItemGroup>
     <None Include="Everything64.dll" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Remove="EverythingDiskUsage.FoundryWorker\**\*.cs" />
+    <Content Remove="EverythingDiskUsage.FoundryWorker\**\*" />
+    <EmbeddedResource Remove="EverythingDiskUsage.FoundryWorker\**\*" />
+    <None Remove="EverythingDiskUsage.FoundryWorker\**\*" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="11.0.0-preview.6.26359.118" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <BuildFoundryWorker Condition="'$(BuildFoundryWorker)' == ''">true</BuildFoundryWorker>
+    <FoundryWorkerProject>$(MSBuildThisFileDirectory)EverythingDiskUsage.FoundryWorker\EverythingDiskUsage.FoundryWorker.csproj</FoundryWorkerProject>
+    <FoundryWorkerOutput>$(MSBuildThisFileDirectory)EverythingDiskUsage.FoundryWorker\bin\$(Configuration)\net11.0-windows10.0.19041.0\win-x64\publish\</FoundryWorkerOutput>
+  </PropertyGroup>
+
+  <Target Name="BuildFoundryWorker"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(BuildFoundryWorker)' == 'true' And '$(DesignTimeBuild)' != 'true' And Exists('$(FoundryWorkerProject)')">
+    <Exec Command="dotnet publish &quot;$(FoundryWorkerProject)&quot; -c $(Configuration) -r win-x64 --self-contained true --nologo -v quiet" />
+  </Target>
+
+  <Target Name="CopyFoundryWorkerToOutput"
+          AfterTargets="Build"
+          Condition="'$(BuildFoundryWorker)' == 'true' And '$(DesignTimeBuild)' != 'true' And Exists('$(FoundryWorkerOutput)EverythingDiskUsage.FoundryWorker.exe')">
+    <ItemGroup>
+      <_FoundryWorkerFiles Include="$(FoundryWorkerOutput)**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FoundryWorkerFiles)"
+          DestinationFiles="@(_FoundryWorkerFiles->'$(OutDir)foundry-worker\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyFoundryWorkerToPublish"
+          AfterTargets="Publish"
+          Condition="'$(BuildFoundryWorker)' == 'true' And '$(DesignTimeBuild)' != 'true' And Exists('$(FoundryWorkerOutput)EverythingDiskUsage.FoundryWorker.exe')">
+    <ItemGroup>
+      <_FoundryWorkerPublishFiles Include="$(FoundryWorkerOutput)**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FoundryWorkerPublishFiles)"
+          DestinationFiles="@(_FoundryWorkerPublishFiles->'$(PublishDir)foundry-worker\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
 
   <!--
     BuildInstaller — runs automatically after every `dotnet publish`.
@@ -27,7 +65,9 @@
     Assumes Inno Setup was installed machine-wide.
     Override the compiler path via: dotnet publish /p:IsccPath="C:\...\ISCC.exe"
   -->
-  <Target Name="BuildInstaller" AfterTargets="Publish">
+    <Target Name="BuildInstaller"
+      AfterTargets="Publish"
+      DependsOnTargets="CopyFoundryWorkerToPublish">
     <PropertyGroup>
       <!-- Locate ISCC.exe in the standard machine-wide install paths, then allow a custom override. -->
       <_IsccPath Condition="'$(_IsccPath)' == '' And Exists('C:\Program Files (x86)\Inno Setup 6\ISCC.exe')">C:\Program Files (x86)\Inno Setup 6\ISCC.exe</_IsccPath>
